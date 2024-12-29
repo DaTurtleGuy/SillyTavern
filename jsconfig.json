@@ -5,7 +5,6 @@
         "moduleResolution": "Node",
         "strictNullChecks": true,
         "strictFunctionTypes": true,
-        "checkJs": true,
         "allowUmdGlobalAccess": true,
         "allowSyntheticDefaultImports": true,
         "resolveJsonModule": true

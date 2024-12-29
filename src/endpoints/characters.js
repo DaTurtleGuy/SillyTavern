@@ -188,7 +188,7 @@ const calculateChatSize = (charDir) => {
 };
 
 // Calculate the total string length of the data object
-const calculateDataSize = (data) => {
+const calculateDataSize = (/** @type {{ [s: string]: any; } | ArrayLike<any>} */ data) => {
     return typeof data === 'object' ? Object.values(data).reduce((acc, val) => acc + new String(val).length, 0) : 0;
 };
 
@@ -203,24 +203,43 @@ const processCharacter = async (item, directories) => {
     try {
         const imgFile = path.join(directories.characters, item);
         const imgData = await readCharacterData(imgFile);
+        const JSONFILE = path.join(directories.characters, "date_added.json");
         if (imgData === undefined) throw new Error('Failed to read character file');
+
+        // Load the date_added data from the JSON file
+        let dateAddedData = getDictFromFile(JSONFILE) || {};
 
         let jsonObject = getCharaCardV2(JSON.parse(imgData), directories, false);
         jsonObject.avatar = item;
         const character = jsonObject;
         character['json_data'] = imgData;
-        const charStat = fs.statSync(path.join(directories.characters, item));
-        character['date_added'] = charStat.ctimeMs;
-        character['create_date'] = jsonObject['create_date'] || humanizedISO8601DateTime(charStat.ctimeMs);
-        const chatsDirectory = path.join(directories.chats, item.replace('.png', ''));
 
+        const fileNameWithoutExtension = item.replace('.png', '');
+        const charStat = fs.statSync(path.join(directories.characters, item));
+
+
+        character['date_added'] = dateAddedData[fileNameWithoutExtension] ?? charStat.birthtimeMs ?? humanizedISO8601DateTime(charStat.ctimeMs);
+
+        let gotta_save = false;
+        if (dateAddedData[fileNameWithoutExtension] === undefined) gotta_save = true;
+
+
+        dateAddedData[fileNameWithoutExtension] = character['date_added'];
+
+        jsonObject['create_date'] = character['date_added'];
+
+        const chatsDirectory = path.join(directories.chats, fileNameWithoutExtension);
         const { chatSize, dateLastChat } = calculateChatSize(chatsDirectory);
+
         character['chat_size'] = chatSize;
         character['date_last_chat'] = dateLastChat;
         character['data_size'] = calculateDataSize(jsonObject?.data);
+
+
+        if (gotta_save) saveDictToFile(dateAddedData, JSONFILE);
+
         return character;
-    }
-    catch (err) {
+    } catch (err) {
         console.log(`Could not process character: ${item}`);
 
         if (err instanceof SyntaxError) {
@@ -236,6 +255,68 @@ const processCharacter = async (item, directories) => {
         };
     }
 };
+
+/**
+ * @param {number} bytes
+ */
+function formatBytes(bytes) {
+    if (bytes === 0) return "0 Bytes";
+    const k = 1024;
+    const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+}
+
+/**
+ * @param {any} dict
+ * @param {string} fileName
+ */
+function saveDictToFile(dict, fileName, folderName = "") {
+    try {
+        const jsonString = JSON.stringify(dict, null, 2);
+        const fileSizeBytes = Buffer.byteLength(jsonString, "utf8");
+
+        let filePath = path.resolve(fileName);
+        if (folderName) {
+            const folderPath = path.resolve(folderName);
+            if (!fs.existsSync(folderPath)) {
+                fs.mkdirSync(folderPath, { recursive: true });
+            }
+            filePath = path.join(folderPath, fileName);
+        }
+
+        fs.writeFileSync(filePath, jsonString, "utf8");
+        console.log(`Dictionary saved to ${filePath}`);
+        console.log(`Storage used: ${formatBytes(fileSizeBytes)}`);
+    } catch (error) {
+        console.error("Error saving the dictionary:", error);
+    }
+}
+
+/**
+ * @param {string} fileName
+ */
+function getDictFromFile(fileName, folderName = "") {
+
+    try {
+        let filePath = path.resolve(fileName);
+        if (folderName) {
+            const folderPath = path.resolve(folderName);
+            filePath = path.join(folderPath, fileName);
+        }
+
+        if (!fs.existsSync(filePath)) {
+            return {};
+        }
+
+        const jsonString = fs.readFileSync(filePath, "utf8");
+        const dict = JSON.parse(jsonString);
+        return dict;
+    } catch (error) {
+        console.error("Error reading the dictionary:", error);
+        return null;
+    }
+}
 
 /**
  * Convert a character object to Spec V2 format.
@@ -290,11 +371,17 @@ function convertToV2(char, directories) {
 }
 
 
+/**
+ * @param {any} char
+ */
 function unsetFavFlag(char) {
     _.set(char, 'fav', false);
     _.set(char, 'data.extensions.fav', false);
 }
 
+/**
+ * @param {{ [x: string]: string; data: any; }} char
+ */
 function readFromV2(char) {
     if (_.isUndefined(char.data)) {
         console.warn(`Char ${char['name']} has Spec v2 data missing`);
@@ -358,7 +445,7 @@ function charaFormatData(data, directories) {
     const char = tryParse(data.json_data) || {};
 
     // Checks if data.alternate_greetings is an array, a string, or neither, and acts accordingly. (expected to be an array of strings)
-    const getAlternateGreetings = data => {
+    const getAlternateGreetings = (/** @type {{ alternate_greetings: any; }} */ data) => {
         if (Array.isArray(data.alternate_greetings)) return data.alternate_greetings;
         if (typeof data.alternate_greetings === 'string') return [data.alternate_greetings];
         return [];
@@ -378,7 +465,7 @@ function charaFormatData(data, directories) {
     _.set(char, 'chat', data.ch_name + ' - ' + humanizedISO8601DateTime());
     _.set(char, 'talkativeness', data.talkativeness);
     _.set(char, 'fav', data.fav == 'true');
-    _.set(char, 'tags', typeof data.tags == 'string' ? (data.tags.split(',').map(x => x.trim()).filter(x => x)) : data.tags || []);
+    _.set(char, 'tags', typeof data.tags == 'string' ? (data.tags.split(',').map((/** @type {string} */ x) => x.trim()).filter((/** @type {any} */ x) => x)) : data.tags || []);
 
     // Spec V2 fields
     _.set(char, 'spec', 'chara_card_v2');
@@ -394,7 +481,7 @@ function charaFormatData(data, directories) {
     _.set(char, 'data.creator_notes', data.creator_notes || '');
     _.set(char, 'data.system_prompt', data.system_prompt || '');
     _.set(char, 'data.post_history_instructions', data.post_history_instructions || '');
-    _.set(char, 'data.tags', typeof data.tags == 'string' ? (data.tags.split(',').map(x => x.trim()).filter(x => x)) : data.tags || []);
+    _.set(char, 'data.tags', typeof data.tags == 'string' ? (data.tags.split(',').map((/** @type {string} */ x) => x.trim()).filter((/** @type {any} */ x) => x)) : data.tags || []);
     _.set(char, 'data.creator', data.creator || '');
     _.set(char, 'data.character_version', data.character_version || '');
     _.set(char, 'data.alternate_greetings', getAlternateGreetings(data));
@@ -942,10 +1029,16 @@ router.post('/delete', jsonParser, async function (request, response) {
     if (!fs.existsSync(avatarPath)) {
         return response.sendStatus(400);
     }
-
+    const JSONFILE = path.join(request.user.directories.characters, "date_added.json");
+    const dateAdded = getDictFromFile(JSONFILE);
     fs.rmSync(avatarPath);
     invalidateThumbnail(request.user.directories, 'avatar', request.body.avatar_url);
     let dir_name = (request.body.avatar_url.replace('.png', ''));
+
+    if (dateAdded[dir_name]) {
+        delete dateAdded[dir_name];
+        saveDictToFile(dateAdded, JSONFILE);
+    }
 
     if (!dir_name.length) {
         console.error('Malicious dirname prevented');
