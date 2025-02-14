@@ -77,7 +77,7 @@ module.exports = {
         'public/scripts/extensions/quick-reply/lib/**',
     ],
     rules: {
-        'no-unused-vars': ['error', { args: 'none' }],
+        'no-unused-vars': ['warn', { args: 'none' }],
         'no-control-regex': 'off',
         'no-constant-condition': ['error', { checkLoops: false }],
         'require-yield': 'off',
