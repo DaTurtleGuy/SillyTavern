@@ -2016,6 +2016,22 @@
             </div>
             <div id="rm_api_block" class="drawer-content closedDrawer">
                 <h3 class="margin0" id="title_api">API</h3>
+                <div class="inline-drawer m-t-1 wide100p" bis_skin_checked="1">
+                    <div class="inline-drawer-toggle inline-drawer-header" bis_skin_checked="1">
+                        <b data-i18n="Quick Prompts Edit">Turtle Options</b>
+                        <div class="fa-solid fa-circle-chevron-down inline-drawer-icon down interactable" bis_skin_checked="1" tabindex="0"></div>
+                    </div>
+                    <div class="inline-drawer-content" bis_skin_checked="1">
+                        <div class="range-block" bis_skin_checked="1">
+                            <label for="replace_vowels" title="Replaces all the vowels in prompt with their cyrilic equivalent" class="checkbox_label widthFreeExpand">
+                                <input id="replace_vowels" type="checkbox"><span>Replace Vowels</span>
+                            </label>
+                            <div class="toggle-description justifyLeft" bis_skin_checked="1">
+                                <span>Replaces all the vowels in prompt with their cyrilic equivalent</span><br>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 <div class="flex-container flexFlowColumn">
                     <div id="main-API-selector-block">
                         <select id="main_api">
@@ -5097,6 +5113,7 @@
                                                 <option value="2" data-i18n="Manual">Manual</option>
                                                 <option value="0" data-i18n="Natural order">Natural order</option>
                                                 <option value="1" data-i18n="List order">List order</option>
+                                                <option value="3">Turtle Buttons</option></option>
                                             </select>
                                         </div>
                                         <div class="flex1 flexGap5">
@@ -5237,6 +5254,20 @@
                 </div>
             </nav>
         </div>
+    </div>
+
+    <div class="turtle_templates">
+        <div id="buttons_container">
+            <div class="turtleButton">
+                <img src="img/ai4.png" alt="">
+                <p>AI4</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="turtle_buttons" style="display: none;">
+        <button class="menu_button">X</button>
+
     </div>
     <!-- various fullscreen popups -->
     <div name="templatesAndPopupsWrapper"> <!--this div is just for IDE sanity for quick collapsing-->

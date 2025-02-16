@@ -5674,6 +5674,59 @@ body:not(.movingUI) .drawer-content.maximized {
     align-self: center;
 }
 
+#turtle_buttons {
+    border: white solid 2px;
+    width: 100%;
+    position: fixed;
+    top: 40px;
+    min-height: 40px;
+    z-index: 1000;
+    display: flex;
+}
+
+#buttons_container {
+    display: flex;
+    border: wheat solid 2px;
+    width: 100%;
+    min-height: 40px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.turtleButton {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    padding: 5px;
+    gap: 5px;
+    background-color: var(--SmartThemeBlurTintColor);
+    transition: all 0.3s ease-in-out;
+    border-radius: 10px;
+    border: 1px solid var(--SmartThemeBorderColor);
+}
+
+.turtleButton:hover {
+    filter: brightness(1.2);
+}
+
+.turtleButton p {
+    margin: 0;
+    padding: 0;
+    text-align: center;
+}
+
+.turtleButton img {
+    width: 25px;
+    height: 25px;
+    object-fit: cover;
+    border-radius: 50%;
+}
+
+.turtle_templates {
+    display: none;
+}
+
 @media (max-width: 768px) {
     .model-card {
         flex-direction: column;

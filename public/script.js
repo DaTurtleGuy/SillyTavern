@@ -264,6 +264,7 @@ import { initSettingsSearch } from './scripts/setting-search.js';
 import { initBulkEdit } from './scripts/bulk-edit.js';
 import { deriveTemplatesFromChatTemplate } from './scripts/chat-templates.js';
 import { getContext } from './scripts/st-context.js';
+import { replaceVowels } from './scripts/TurtleAdittions.js';
 
 // API OBJECT FOR EXTERNAL WIRING
 globalThis.SillyTavern = {
@@ -563,6 +564,9 @@ let crop_data = undefined;
 let is_delete_mode = false;
 let fav_ch_checked = false;
 let scrollLock = false;
+
+let REPLACE_VOWELS = localStorage.getItem('REPLACE_VOWELS') === 'true';
+
 export let abortStatusCheck = new AbortController();
 let charDragDropHandler = null;
 
@@ -2971,6 +2975,12 @@ export function getCharacterCardFields() {
         }
     }
 
+    if (REPLACE_VOWELS) {
+        for (const key of Object.keys(result)) {
+            result[key] = replaceVowels(result[key]);
+        }
+    }
+
     return result;
 }
 
@@ -4429,7 +4439,18 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 messages: oaiMessages,
                 messageExamples: oaiMessageExamples,
             }, dryRun);
+
+
             generate_data = { prompt: prompt };
+
+            if (REPLACE_VOWELS) {
+                const turtleMessages = generate_data.prompt
+                for (const i in Object.keys(turtleMessages)) {
+                    turtleMessages[i].content = replaceVowels(turtleMessages[i].content)
+                }
+
+                generate_data.prompt = turtleMessages
+            }
 
             // TODO: move these side-effects somewhere else, so this switch-case solely sets generate_data
             // counts will return false if the user has not enabled the token breakdown feature
@@ -9306,6 +9327,11 @@ jQuery(async function () {
         toastr.success('Chat and settings saved.');
         return '';
     }
+    $("#replace_vowels").prop('checked', REPLACE_VOWELS);
+    $("#replace_vowels").change(function () {
+        REPLACE_VOWELS = $(this).is(":checked");
+        localStorage.setItem("REPLACE_VOWELS", REPLACE_VOWELS ? "true" : "false");
+    })
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'dupe',
