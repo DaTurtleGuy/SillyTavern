@@ -143,6 +143,7 @@ async function _save(group, reload = true) {
     if (reload) {
         await getCharacters();
     }
+    populateFloatingCharacters();
 }
 
 // Group chats
@@ -188,6 +189,7 @@ async function loadGroupChat(chatId) {
 
 function showTurtleButtons() {
     $("#turtle_buttons").show();
+    $("#buttons_container").show();
 }
 
 export function hideTurtleButtons() {
@@ -197,6 +199,7 @@ export function hideTurtleButtons() {
 export function populateFloatingCharacters() {
     const value = parseInt($("#rm_group_activation_strategy").val().toString(), 10);
     if (value !== group_activation_strategy.TURTLE) {
+        hideTurtleButtons();
         return;
     }
     console.log("Populating floating characters");
