@@ -179,10 +179,107 @@ async function loadGroupChat(chatId) {
 
     if (response.ok) {
         const data = await response.json();
+        populateFloatingCharacters();
         return data;
     }
 
     return [];
+}
+
+function showTurtleButtons() {
+    $("#turtle_buttons").show();
+}
+
+export function hideTurtleButtons() {
+    $("#turtle_buttons").hide();
+}
+
+export function populateFloatingCharacters() {
+    const value = parseInt($("#rm_group_activation_strategy").val().toString(), 10);
+    if (value !== group_activation_strategy.TURTLE) {
+        return;
+    }
+    console.log("Populating floating characters");
+    showTurtleButtons(); // Use the new function name
+
+    const characters = $("#rm_group_members .group_member");
+    $("#buttons_container").empty(); // Use the correct container ID
+    const turtleButtonsContainer = $("#buttons_container"); // Cache the container
+
+    // Convert jQuery collection to an array, sort it, and then re-wrap it in jQuery
+    const sortedCharacters = characters
+        .toArray()
+        .sort((a, b) => {
+            return parseInt($(a).css("order") || "0") - parseInt($(b).css("order") || "0");
+        });
+
+    $(sortedCharacters).each(function () {
+        const $this = $(this); // Cache $(this) for efficiency
+
+        const template = $(".turtle_templates .turtleButton").clone(); // Use the correct template class
+
+        const name = $this.find(".ch_name").text();
+        const speakButton = $this.find('.right_menu_button[data-action="speak"]');
+        let avatarSrc = $this.find(".avatar img").attr("src");
+
+        if (avatarSrc) {
+            template.find("img").attr("src", avatarSrc);
+        }
+
+        template.find("p").text(name); //  Updated selector to find <p> tag
+
+        template.on("click", () => {
+            if (is_group_generating) {
+                return;
+            }
+            const text = $("#send_textarea").val().toString().trim();
+            if (text) {
+                addMessageFromCharacter(text, name, avatarSrc);
+                $("#send_textarea").val("");
+                setTimeout(() => {
+                    $("#send_textarea").trigger("input");
+                    $("#send_textarea").trigger("change");
+                    $("#send_textarea").trigger("keyup");
+                    $("#send_textarea").trigger("keydown");
+                    $("#send_textarea").trigger("keypress");
+                }, 100);
+            } else {
+                speakButton.trigger("click");
+            }
+        });
+
+        turtleButtonsContainer.append(template);  //Use cached container
+    });
+
+    // Make sure to show the container when buttons are populated.
+    if (turtleButtonsContainer.children().length > 0) {
+        $("#turtle_buttons").show();
+    } else {
+        $("#turtle_buttons").hide(); // Hide if no buttons.
+        hideTurtleButtons(); // Use the new function name
+    }
+}
+
+function addMessageFromCharacter(message, characterName, avatar) {
+    // Create a new message object
+    const newMessage = {
+        name: characterName,
+        is_user: false,
+        is_name: true,
+        force_avatar: avatar,
+        send_date: getMessageTimeStamp(),
+        mes: message,
+        extra: {},
+    };
+
+    // Add the message to the chat array
+    chat.push(newMessage);
+
+    // Render the message in the chat
+    addOneMessage(newMessage);
+
+    // Update the chat metadata
+    saveChatConditional();
 }
 
 async function validateGroup(group) {
@@ -534,6 +631,7 @@ async function saveGroupChat(groupId, shouldSaveGroup) {
     if (shouldSaveGroup) {
         await editGroup(groupId, false, false);
     }
+    populateFloatingCharacters();
 }
 
 export async function renameGroupMember(oldAvatar, newAvatar, newName) {

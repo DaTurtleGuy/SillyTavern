@@ -73,6 +73,8 @@ import {
     getGroupBlock,
     getGroupCharacterCards,
     getGroupDepthPrompts,
+    hideTurtleButtons,
+    populateFloatingCharacters,
 } from './scripts/group-chats.js';
 
 import {
@@ -1344,6 +1346,8 @@ export async function selectCharacterById(id) {
     if (selected_group && is_group_generating) {
         return;
     }
+
+    hideTurtleButtons();
 
     if (selected_group || this_chid !== id) {
         //if clicked on a different character from what was currently selected
@@ -9333,6 +9337,40 @@ jQuery(async function () {
         localStorage.setItem("REPLACE_VOWELS", REPLACE_VOWELS ? "true" : "false");
     })
 
+    $("#rm_group_activation_strategy").change(function () {
+        populateFloatingCharacters();
+    });
+
+    function adjustTurtleDimensions() {
+        let topBarWidth = $("#top-bar").width();
+        let turtleButtons = $("#turtle_buttons");
+
+        const areButtonsVisible = $("#buttons_container").is(":visible");
+        if (!areButtonsVisible) turtleButtons.width("auto");
+        else turtleButtons.width(topBarWidth);
+        console.log(areButtonsVisible);
+
+
+
+        // Calculate left position for centering with fixed positioning
+        let leftPosition = (window.innerWidth - topBarWidth) / 2;
+
+        // Apply the calculated left position and fixed positioning
+        turtleButtons.css({
+            "left": leftPosition + "px",
+            "position": "fixed", // Ensure fixed positioning
+        });
+    }
+
+    $("#turtle_close").click(function () {
+        $("#buttons_container").toggle();
+        adjustTurtleDimensions();
+    });
+    $(window).resize(adjustTurtleDimensions);
+    adjustTurtleDimensions();
+    setInterval(() => {
+        adjustTurtleDimensions();
+    }, 500);
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'dupe',
         callback: duplicateCharacter,
@@ -11273,4 +11311,7 @@ jQuery(async function () {
 
     initCustomSelectedSamplers();
 });
+
+
+
 
