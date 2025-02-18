@@ -9344,21 +9344,14 @@ jQuery(async function () {
     function adjustTurtleDimensions() {
         let topBarWidth = $("#top-bar").width();
         let turtleButtons = $("#turtle_buttons");
-
         const areButtonsVisible = $("#buttons_container").is(":visible");
         if (!areButtonsVisible) turtleButtons.width("auto");
         else turtleButtons.width(topBarWidth);
         console.log(areButtonsVisible);
-
-
-
-        // Calculate left position for centering with fixed positioning
         let leftPosition = (window.innerWidth - topBarWidth) / 2;
-
-        // Apply the calculated left position and fixed positioning
         turtleButtons.css({
             "left": leftPosition + "px",
-            "position": "fixed", // Ensure fixed positioning
+            "position": "fixed",
         });
     }
 
