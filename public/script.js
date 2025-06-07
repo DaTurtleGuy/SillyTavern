@@ -1,3 +1,4 @@
+/* eslint-disable */
 import {
     showdown,
     moment,
@@ -269,7 +270,7 @@ import { getContext } from './scripts/st-context.js';
 import { replaceVowels } from './scripts/TurtleAdittions.js';
 
 // API OBJECT FOR EXTERNAL WIRING
-globalThis.SillyTavern = {
+globalThis.TurtleTavern = {
     libs,
     getContext,
 };
@@ -517,10 +518,10 @@ let converter;
 
 // array for prompt token calculations
 console.debug('initializing Prompt Itemization Array on Startup');
-const promptStorage = localforage.createInstance({ name: 'SillyTavern_Prompts' });
+const promptStorage = localforage.createInstance({ name: 'TurtleTavern_Prompts' });
 export let itemizedPrompts = [];
 
-export const systemUserName = 'SillyTavern System';
+export const systemUserName = 'TurtleTavern System';
 export const neutralCharacterName = 'Assistant';
 let default_user_name = 'User';
 export let name1 = default_user_name;
@@ -533,7 +534,7 @@ let chat_create_date = '';
 let firstRun = false;
 let settingsReady = false;
 let currentVersion = '0.0.0';
-let displayVersion = 'SillyTavern';
+let displayVersion = 'TurtleTavern';
 
 let generatedPromptCache = '';
 let generation_started = new Date();
@@ -545,7 +546,7 @@ export const default_avatar = 'img/ai4.png';
 export const system_avatar = 'img/five.png';
 export const comment_avatar = 'img/quill.png';
 export const default_user_avatar = 'img/user-default.png';
-export let CLIENT_VERSION = 'SillyTavern:UNKNOWN:Cohee#1207'; // For Horde header
+export let CLIENT_VERSION = 'TurtleTavern:UNKNOWN:Cohee#1207'; // For Horde header
 let optionsPopper = Popper.createPopper(document.getElementById('options_button'), document.getElementById('options'), {
     placement: 'top-start',
 });
@@ -741,7 +742,7 @@ $(document).ajaxError(function myErrorHandler(_, xhr) {
     if (xhr.status == 403) {
         toastr.warning(
             'doubleCsrf errors in console are NORMAL in this case. If you want to run ST in multiple tabs, start the server with --disableCsrf option.',
-            'Looks like you\'ve opened SillyTavern in another browser tab',
+            'Looks like you\'ve opened TurtleTavern in another browser tab',
             { timeOut: 0, extendedTimeOut: 0, preventDuplicates: true },
         );
     } */
@@ -752,7 +753,7 @@ async function getClientVersion() {
         const response = await fetch('/version');
         const data = await response.json();
         CLIENT_VERSION = data.agent;
-        displayVersion = `SillyTavern ${data.pkgVersion}`;
+        displayVersion = `TurtleTavern ${data.pkgVersion}`;
         currentVersion = data.pkgVersion;
 
         if (data.gitRevision && data.gitBranch) {
@@ -9347,7 +9348,7 @@ jQuery(async function () {
         const areButtonsVisible = $("#buttons_container").is(":visible");
         if (!areButtonsVisible) turtleButtons.width("auto");
         else turtleButtons.width(topBarWidth);
-        console.log(areButtonsVisible);
+        //console.log(areButtonsVisible);
         let leftPosition = (window.innerWidth - topBarWidth) / 2;
         turtleButtons.css({
             "left": leftPosition + "px",
@@ -10811,7 +10812,7 @@ jQuery(async function () {
         }
 
         if (selected_group && file.name.endsWith('.json')) {
-            toastr.warning('Only SillyTavern\'s own format is supported for group chat imports. Sorry!');
+            toastr.warning('Only TurtleTavern\'s own format is supported for group chat imports. Sorry!');
             return;
         }
 
@@ -11303,8 +11304,177 @@ jQuery(async function () {
     });
 
     initCustomSelectedSamplers();
+
+    $(document).on('click', '#replaceAllAsterisks', function () {
+        event.stopPropagation();
+        deleteAsterisks();
+    });
+
+    $(document).on('click', '#replaceQuotes', function () {
+        replaceQuotes();
+    });
 });
 
+
+async function replaceQuotes() {
+    const editedCharacter = characters[this_chid];
+
+    //Replace weird quotes with normal ones
+    editedCharacter.first_mes = sanitizeFuckingText(editedCharacter.first_mes);
+    editedCharacter.data.first_mes = sanitizeFuckingText(editedCharacter.data.first_mes);
+    editedCharacter.data.alternate_greetings = editedCharacter.data.alternate_greetings.map(greeting => sanitizeFuckingText(greeting));
+    editedCharacter.personality = sanitizeFuckingText(editedCharacter.personality);
+    editedCharacter.data.personality = sanitizeFuckingText(editedCharacter.data.personality);
+    editedCharacter.description = sanitizeFuckingText(editedCharacter.description);
+    editedCharacter.data.description = sanitizeFuckingText(editedCharacter.data.description);
+
+    characters[this_chid] = editedCharacter;
+    await saveCurrentCharacterDataProgrammatically();
+    select_selected_character(this_chid);
+}
+
+async function deleteAsterisks() {
+    const editedCharacter = characters[this_chid];
+
+    // Remove all asterisks from relevant fields
+    editedCharacter.first_mes = editedCharacter.first_mes.replace(/\*/g, '');
+    editedCharacter.data.first_mes = editedCharacter.data.first_mes.replace(/\*/g, '');
+
+    editedCharacter.data.alternate_greetings = editedCharacter.data.alternate_greetings.map(greeting => greeting.replace(/\*/g, ''));
+
+    editedCharacter.personality = editedCharacter.personality.replace(/\*/g, '');
+    editedCharacter.data.personality = editedCharacter.data.personality.replace(/\*/g, '');
+
+    editedCharacter.description = editedCharacter.description.replace(/\*/g, '');
+    editedCharacter.data.description = editedCharacter.data.description.replace(/\*/g, '');
+
+    characters[this_chid] = editedCharacter;
+    await saveCurrentCharacterDataProgrammatically();
+    select_selected_character(this_chid);
+}
+
+
+function sanitizeFuckingText(text) {
+    const replacements = {
+        // Double quotes
+        "\u201C": '"', // Left double quotation mark
+        "\u201D": '"', // Right double quotation mark
+        "\u201E": '"', // Double low-9 quotation mark
+        "\u201F": '"', // Double high-reversed-9 quotation mark
+        "\u00AB": '"', // Left-pointing double angle quotation mark
+        "\u00BB": '"', // Right-pointing double angle quotation mark
+        "\u2E42": '"', // Double low-reversed-9 quotation mark
+
+        // Single quotes
+        "\u2018": "'", // Left single quotation mark
+        "\u2019": "'", // Right single quotation mark
+        "\u201A": "'", // Single low-9 quotation mark
+        "\u201B": "'", // Single high-reversed-9 quotation mark
+        "\u2039": "'", // Left-pointing single angle quotation mark
+        "\u203A": "'", // Right-pointing single angle quotation mark
+        "\u275B": "'", // Heavy single turned comma quotation mark ornament
+        "\u275C": "'", // Heavy single comma quotation mark ornament
+
+        // Other stylistic variants
+        "\u275D": '"', // Heavy double turned comma quotation mark ornament
+        "\u275E": '"', // Heavy double comma quotation mark ornament
+    };
+
+    return text.replace(
+        /[\u2018-\u201F\u00AB\u00BB\u2039\u203A\u2E42\u275B-\u275E]/g,
+        (match) => replacements[match] || match
+    );
+}
+
+export async function saveCurrentCharacterDataProgrammatically() {
+    if (this_chid === undefined) {
+        toastr.warning('No character selected. Cannot save character data.');
+        return false;
+    }
+
+    if (is_send_press || is_group_generating) {
+        toastr.error('Cannot save character details while generation is in progress. Please stop the generation first.');
+        return false;
+    }
+
+    showLoader(); // Show loader during the save process
+
+    try {
+        const characterToSave = characters[this_chid];
+        const formData = new FormData();
+
+        // Populate FormData with all character card fields from the JS object
+        // This requires mapping your character object properties to the expected FormData keys
+        formData.append('ch_name', characterToSave.name);
+        formData.append('avatar_url', characterToSave.avatar); // The original filename
+        formData.append('description', characterToSave.description || '');
+        formData.append('personality', characterToSave.personality || '');
+        formData.append('first_mes', characterToSave.first_mes || '');
+        formData.append('scenario', characterToSave.scenario || '');
+        formData.append('mes_example', characterToSave.mes_example || '');
+        formData.append('talkativeness', characterToSave.talkativeness || talkativeness_default);
+        formData.append('fav', String(characterToSave.fav || false)); // Ensure boolean is string "true"/"false"
+
+        // Handle properties inside the 'data' object (extensions)
+        // Adjust these based on how your character data is structured for specific fields
+        formData.append('creator_notes', characterToSave.data?.creator_notes || '');
+        formData.append('character_version', characterToSave.data?.character_version || '');
+        formData.append('system_prompt', characterToSave.data?.system_prompt || '');
+        formData.append('post_history_instructions', characterToSave.data?.post_history_instructions || '');
+        formData.append('creator', characterToSave.data?.creator || '');
+        formData.append('tags', Array.isArray(characterToSave.data?.tags) ? characterToSave.data.tags.join(', ') : '');
+        formData.append('world', characterToSave.data?.extensions?.world || ''); // Example for nested extension
+        formData.append('depth_prompt_prompt', characterToSave.data?.extensions?.depth_prompt?.prompt || '');
+        formData.append('depth_prompt_depth', characterToSave.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default);
+        formData.append('depth_prompt_role', characterToSave.data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default);
+
+        // Handle alternate greetings (important! needs to be appended multiple times)
+        if (Array.isArray(characterToSave.data?.alternate_greetings)) {
+            characterToSave.data.alternate_greetings.forEach(greeting => {
+                formData.append('alternate_greetings', greeting);
+            });
+        }
+
+        // If there's an active crop_data (e.g., from a recent avatar upload), include it
+        let url = '/api/characters/edit';
+        if (crop_data !== undefined) {
+            url += `?crop=${encodeURIComponent(JSON.stringify(crop_data))}`;
+            crop_data = undefined; // Clear after use
+        }
+
+        const headers = getRequestHeaders();
+        delete headers['Content-Type']; // FormData handles Content-Type automatically
+
+        const fetchResult = await fetch(url, {
+            method: 'POST',
+            headers: headers,
+            body: formData,
+            cache: 'no-cache',
+        });
+
+        if (!fetchResult.ok) {
+            const errorData = await fetchResult.json();
+            throw new Error(errorData.message || `Server returned an error: ${fetchResult.status}`);
+        }
+
+        await getOneCharacter(characterToSave.avatar); // Reload updated character data from server
+        favsToHotswap(); // Update fav status
+        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character: characters[this_chid] } });
+
+        // Optional: Re-render the editor UI if necessary (e.g., to reflect cleaned data)
+        // If you want the textareas to show the stripped `*` characters, you'd need to re-select the character.
+        // select_selected_character(this_chid);
+
+        return true;
+
+    } catch (error) {
+        console.error('Error saving character programmatically:', error);
+        toastr.error(`Failed to save character: ${error.message || 'Unknown error'}`);
+        return false;
+    } finally {
+        hideLoader();
+    }
+}
 
 
 
