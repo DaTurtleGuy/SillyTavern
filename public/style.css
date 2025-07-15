@@ -5680,7 +5680,7 @@ body:not(.movingUI) .drawer-content.maximized {
     position: fixed;
     top: 40px;
     min-height: 40px;
-    z-index: 1000;
+    z-index: 29;
     display: flex;
     justify-self: center;
 }
