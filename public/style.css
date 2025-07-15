@@ -5237,7 +5237,7 @@ body:not(.movingUI) .drawer-content.maximized {
     position: absolute;
     padding: 0;
     filter: drop-shadow(1px 1px 2px var(--black50a));
-    z-index: 29;
+    z-index: 35;
     overflow: hidden;
     display: none;
     bottom: 0;
@@ -5680,7 +5680,7 @@ body:not(.movingUI) .drawer-content.maximized {
     position: fixed;
     top: 40px;
     min-height: 40px;
-    z-index: 29;
+    z-index: 31;
     display: flex;
     justify-self: center;
 }

@@ -41,7 +41,7 @@
         position: absolute;
         padding: 0;
         filter: drop-shadow(2px 2px 2px #51515199);
-        z-index: 30;
+        z-index: 35;
         overflow: hidden;
         right: 0;
         width: fit-content;
@@ -388,7 +388,7 @@
         position: absolute;
         padding: 0;
         filter: drop-shadow(2px 2px 2px #51515199);
-        z-index: 30;
+        z-index: 35;
         overflow: hidden;
         display: none;
         right: 0;
