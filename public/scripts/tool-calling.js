@@ -1,7 +1,7 @@
 import { DOMPurify } from '../lib.js';
 
 import { addOneMessage, chat, event_types, eventSource, main_api, saveChatConditional, system_avatar, systemUserName } from '../script.js';
-import { chat_completion_sources, oai_settings } from './openai.js';
+import { chat_completion_sources, custom_prompt_post_processing_types, model_list, oai_settings } from './openai.js';
 import { Popup } from './popup.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
@@ -25,6 +25,7 @@ import { isTrueBoolean } from './utils.js';
  * @typedef {object} ToolInvocationResult
  * @property {ToolInvocation[]} invocations Successful tool invocations
  * @property {Error[]} errors Errors that occurred during tool invocation
+ * @property {string[]} stealthCalls Names of stealth tools that were invoked
  */
 
 /**
@@ -36,6 +37,7 @@ import { isTrueBoolean } from './utils.js';
  * @property {function} action - The action to perform when the tool is invoked.
  * @property {function} [formatMessage] - A function to format the tool call message.
  * @property {function} [shouldRegister] - A function to determine if the tool should be registered.
+ * @property {boolean} [stealth] - A tool call result will not be shown in the chat. No follow-up generation will be performed.
  */
 
 /**
@@ -58,6 +60,9 @@ function assignNestedVariables(scope, arg, prefix) {
     Object.entries(arg).forEach(([key, value]) => {
         const newPrefix = `${prefix}.${key}`;
         if (typeof value === 'object' && value !== null) {
+            if (Array.isArray(value)) {
+                scope.letVariable(newPrefix, JSON.stringify(value));
+            }
             assignNestedVariables(scope, value, newPrefix);
         } else {
             scope.letVariable(newPrefix, value);
@@ -148,6 +153,12 @@ class ToolDefinition {
     #shouldRegister;
 
     /**
+     * A tool call result will not be shown in the chat. No follow-up generation will be performed.
+     * @type {boolean}
+     */
+    #stealth;
+
+    /**
      * Creates a new ToolDefinition.
      * @param {string} name A unique name for the tool.
      * @param {string} displayName A user-friendly display name for the tool.
@@ -156,8 +167,9 @@ class ToolDefinition {
      * @param {function} action A function that will be called when the tool is executed.
      * @param {function} formatMessage A function that will be called to format the tool call toast.
      * @param {function} shouldRegister A function that will be called to determine if the tool should be registered.
+     * @param {boolean} stealth A tool call result will not be shown in the chat. No follow-up generation will be performed.
      */
-    constructor(name, displayName, description, parameters, action, formatMessage, shouldRegister) {
+    constructor(name, displayName, description, parameters, action, formatMessage, shouldRegister, stealth) {
         this.#name = name;
         this.#displayName = displayName;
         this.#description = description;
@@ -165,6 +177,7 @@ class ToolDefinition {
         this.#action = action;
         this.#formatMessage = formatMessage;
         this.#shouldRegister = shouldRegister;
+        this.#stealth = stealth;
     }
 
     /**
@@ -214,6 +227,10 @@ class ToolDefinition {
     get displayName() {
         return this.#displayName;
     }
+
+    get stealth() {
+        return this.#stealth;
+    }
 }
 
 /**
@@ -246,7 +263,7 @@ export class ToolManager {
      * Registers a new tool with the tool registry.
      * @param {ToolRegistration} tool The tool to register.
      */
-    static registerFunctionTool({ name, displayName, description, parameters, action, formatMessage, shouldRegister }) {
+    static registerFunctionTool({ name, displayName, description, parameters, action, formatMessage, shouldRegister, stealth }) {
         // Convert WIP arguments
         if (typeof arguments[0] !== 'object') {
             [name, description, parameters, action] = arguments;
@@ -256,7 +273,16 @@ export class ToolManager {
             console.warn(`[ToolManager] A tool with the name "${name}" has already been registered. The definition will be overwritten.`);
         }
 
-        const definition = new ToolDefinition(name, displayName, description, parameters, action, formatMessage, shouldRegister);
+        const definition = new ToolDefinition(
+            name,
+            displayName,
+            description,
+            parameters,
+            action,
+            formatMessage,
+            shouldRegister,
+            stealth,
+        );
         this.#tools.set(name, definition);
         console.log('[ToolManager] Registered function tool:', definition);
     }
@@ -275,6 +301,19 @@ export class ToolManager {
     }
 
     /**
+    * Parse tool call parameters -- they're usually JSON, but they can also be empty strings (which are not valid JSON apparently).
+    * @param {object} parameters The parameters for a tool call, usually a string with JSON inside
+    * @returns {object} The parsed parameters
+    */
+    static #parseParameters(parameters) {
+        return parameters === ''
+            ? {}
+            : typeof parameters === 'string'
+                ? JSON.parse(parameters)
+                : parameters;
+    }
+
+    /**
      * Invokes a tool by name. Returns the result of the tool's action function.
      * @param {string} name The name of the tool to invoke.
      * @param {object} parameters Function parameters. For example, if the tool requires a "name" parameter, you would pass {name: "value"}.
@@ -286,7 +325,7 @@ export class ToolManager {
                 throw new Error(`No tool with the name "${name}" has been registered.`);
             }
 
-            const invokeParameters = typeof parameters === 'string' ? JSON.parse(parameters) : parameters;
+            const invokeParameters = this.#parseParameters(parameters);
             const tool = this.#tools.get(name);
             const result = await tool.invoke(invokeParameters);
             return typeof result === 'string' ? result : JSON.stringify(result);
@@ -303,6 +342,20 @@ export class ToolManager {
     }
 
     /**
+     * Checks if a tool is a stealth tool.
+     * @param {string} name The name of the tool to check.
+     * @returns {boolean} Whether the tool is a stealth tool.
+     */
+    static isStealthTool(name) {
+        if (!this.#tools.has(name)) {
+            return false;
+        }
+
+        const tool = this.#tools.get(name);
+        return !!tool.stealth;
+    }
+
+    /**
      * Formats a message for a tool call by name.
      * @param {string} name The name of the tool to format the message for.
      * @param {object} parameters Function tool call parameters.
@@ -315,7 +368,7 @@ export class ToolManager {
 
         try {
             const tool = this.#tools.get(name);
-            const formatParameters = typeof parameters === 'string' ? JSON.parse(parameters) : parameters;
+            const formatParameters = this.#parseParameters(parameters);
             return await tool.formatMessage(formatParameters);
         } catch (error) {
             console.error(`[ToolManager] An error occurred while formatting the tool call message for "${name}":`, error);
@@ -469,6 +522,26 @@ export class ToolManager {
                 }
             }
         }
+        if (Array.isArray(parsed?.candidates)) {
+            for (let choiceIndex = 0; choiceIndex < parsed.candidates.length; choiceIndex++) {
+                const candidate = parsed.candidates[choiceIndex];
+                if (Array.isArray(candidate?.content?.parts)) {
+                    for (let toolCallIndex = 0; toolCallIndex < candidate.content.parts.length; toolCallIndex++) {
+                        const part = candidate.content.parts[toolCallIndex];
+                        if (part.functionCall) {
+                            if (!Array.isArray(toolCalls[choiceIndex])) {
+                                toolCalls[choiceIndex] = [];
+                            }
+                            if (toolCalls[choiceIndex][toolCallIndex] === undefined) {
+                                toolCalls[choiceIndex][toolCallIndex] = {};
+                            }
+                            const targetToolCall = toolCalls[choiceIndex][toolCallIndex];
+                            ToolManager.#applyToolCallDelta(targetToolCall, part.functionCall);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -518,14 +591,66 @@ export class ToolManager {
             return false;
         }
 
+        // Post-processing will forcefully remove past tool calls from the prompt, making them useless
+        const { NONE, MERGE_TOOLS, SEMI_TOOLS, STRICT_TOOLS } = custom_prompt_post_processing_types;
+        const allowedPromptPostProcessing = [NONE, MERGE_TOOLS, SEMI_TOOLS, STRICT_TOOLS];
+        if (!allowedPromptPostProcessing.includes(oai_settings.custom_prompt_post_processing)) {
+            return false;
+        }
+
+        if (oai_settings.chat_completion_source === chat_completion_sources.POLLINATIONS && Array.isArray(model_list)) {
+            const currentModel = model_list.find(model => model.id === oai_settings.pollinations_model);
+            if (currentModel) {
+                return currentModel.tools;
+            }
+        }
+
+        if (oai_settings.chat_completion_source === chat_completion_sources.FIREWORKS && Array.isArray(model_list)) {
+            const currentModel = model_list.find(model => model.id === oai_settings.fireworks_model);
+            if (currentModel) {
+                return currentModel.supports_tools;
+            }
+        }
+
+        if (oai_settings.chat_completion_source === chat_completion_sources.OPENROUTER && Array.isArray(model_list)) {
+            const currentModel = model_list.find(model => model.id === oai_settings.openrouter_model);
+            if (Array.isArray(currentModel?.supported_parameters)) {
+                return currentModel.supported_parameters.includes('tools');
+            }
+        }
+
+        if (oai_settings.chat_completion_source === chat_completion_sources.MISTRALAI && Array.isArray(model_list)) {
+            const currentModel = model_list.find(model => model.id === oai_settings.mistralai_model);
+            if (currentModel && currentModel.capabilities) {
+                return currentModel.capabilities.function_calling;
+            }
+        }
+
+        if (oai_settings.chat_completion_source === chat_completion_sources.AIMLAPI && Array.isArray(model_list)) {
+            const currentModel = model_list.find(model => model.id === oai_settings.aimlapi_model);
+            if (Array.isArray(currentModel?.features)) {
+                return currentModel.features.includes('openai/chat-completion.function');
+            }
+        }
+
         const supportedSources = [
             chat_completion_sources.OPENAI,
             chat_completion_sources.CUSTOM,
             chat_completion_sources.MISTRALAI,
             chat_completion_sources.CLAUDE,
             chat_completion_sources.OPENROUTER,
+            chat_completion_sources.AIMLAPI,
             chat_completion_sources.GROQ,
             chat_completion_sources.COHERE,
+            chat_completion_sources.DEEPSEEK,
+            chat_completion_sources.MAKERSUITE,
+            chat_completion_sources.VERTEXAI,
+            chat_completion_sources.AI21,
+            chat_completion_sources.XAI,
+            chat_completion_sources.POLLINATIONS,
+            chat_completion_sources.MOONSHOT,
+            chat_completion_sources.FIREWORKS,
+            chat_completion_sources.COMETAPI,
         ];
         return supportedSources.includes(oai_settings.chat_completion_source);
     }
@@ -547,8 +672,11 @@ export class ToolManager {
      * @returns {any[]} Tool calls from the response data
      */
     static #getToolCallsFromData(data) {
+        const getRandomId = () => Math.random().toString(36).substring(2);
         const isClaudeToolCall = c => Array.isArray(c) ? c.filter(x => x).every(isClaudeToolCall) : c?.input && c?.name && c?.id;
+        const isGoogleToolCall = c => Array.isArray(c) ? c.filter(x => x).every(isGoogleToolCall) : c?.name && c?.args;
         const convertClaudeToolCall = c => ({ id: c.id, function: { name: c.name, arguments: c.input } });
+        const convertGoogleToolCall = (c) => ({ id: getRandomId(), function: { name: c.name, arguments: c.args } });
 
         // Parsed tool calls from streaming data
         if (Array.isArray(data) && data.length > 0 && Array.isArray(data[0])) {
@@ -556,11 +684,20 @@ export class ToolManager {
                 return data[0].filter(x => x).map(convertClaudeToolCall);
             }
 
+            if (isGoogleToolCall(data[0])) {
+                return data[0].filter(x => x).map(convertGoogleToolCall);
+            }
+
             if (typeof data[0]?.[0]?.tool_calls === 'object') {
                 return Array.isArray(data[0]?.[0]?.tool_calls) ? data[0][0].tool_calls : [data[0][0].tool_calls];
             }
 
             return data[0];
+        }
+
+        // Google AI Studio tool calls
+        if (Array.isArray(data?.responseContent?.parts)) {
+            return data.responseContent.parts.filter(p => p.functionCall).map(p => convertGoogleToolCall(p.functionCall));
         }
 
         // Parsed tool calls from non-streaming data
@@ -608,6 +745,7 @@ export class ToolManager {
         const result = {
             invocations: [],
             errors: [],
+            stealthCalls: [],
         };
         const toolCalls = ToolManager.#getToolCallsFromData(data);
 
@@ -616,7 +754,7 @@ export class ToolManager {
         }
 
         for (const toolCall of toolCalls) {
-            if (typeof toolCall.function !== 'object') {
+            if (!toolCall || !toolCall.function || typeof toolCall.function !== 'object') {
                 continue;
             }
 
@@ -625,7 +763,7 @@ export class ToolManager {
             const parameters = toolCall.function.arguments;
             const name = toolCall.function.name;
             const displayName = ToolManager.getDisplayName(name);
-
+            const isStealth = ToolManager.isStealthTool(name);
             const message = await ToolManager.formatToolCallMessage(name, parameters);
             const toast = message && toastr.info(message, 'Tool Calling', { timeOut: 0 });
             const toolResult = await ToolManager.invokeFunctionTool(name, parameters);
@@ -635,6 +773,12 @@ export class ToolManager {
             // Save a successful invocation
             if (toolResult instanceof Error) {
                 result.errors.push(toolResult);
+                continue;
+            }
+
+            // Don't save stealth tool invocations
+            if (isStealth) {
+                result.stealthCalls.push(name);
                 continue;
             }
 
@@ -860,6 +1004,14 @@ export class ToolManager {
                     isRequired: false,
                     acceptsMultiple: false,
                 }),
+                SlashCommandNamedArgument.fromProps({
+                    name: 'stealth',
+                    description: 'If true, a tool call result will not be shown in the chat and no follow-up generation will be performed.',
+                    typeList: [ARGUMENT_TYPE.BOOLEAN],
+                    isRequired: false,
+                    acceptsMultiple: false,
+                    defaultValue: String(false),
+                }),
             ],
             unnamedArgumentList: [
                 SlashCommandArgument.fromProps({
@@ -891,7 +1043,7 @@ export class ToolManager {
                     };
                 }
 
-                const { name, displayName, description, parameters, formatMessage, shouldRegister } = args;
+                const { name, displayName, description, parameters, formatMessage, shouldRegister, stealth } = args;
 
                 if (!(action instanceof SlashCommandClosure)) {
                     throw new Error('The unnamed argument must be a closure.');
@@ -927,6 +1079,7 @@ export class ToolManager {
                     action: actionFunc,
                     formatMessage: formatMessageFunc,
                     shouldRegister: shouldRegisterFunc,
+                    stealth: stealth && isTrueBoolean(String(stealth)),
                 });
 
                 return '';

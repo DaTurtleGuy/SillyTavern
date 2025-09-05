@@ -19,6 +19,9 @@ import seedrandom from 'seedrandom';
 import * as Popper from '@popperjs/core';
 import droll from 'droll';
 import morphdom from 'morphdom';
+import { toggle as slideToggle } from 'slidetoggle';
+import chalk from 'chalk';
+import yaml from 'yaml';
 
 /**
  * Expose the libraries to the 'window' object.
@@ -94,6 +97,9 @@ export default {
     Popper,
     droll,
     morphdom,
+    slideToggle,
+    chalk,
+    yaml,
 };
 
 export {
@@ -115,4 +121,7 @@ export {
     Popper,
     droll,
     morphdom,
+    slideToggle,
+    chalk,
+    yaml,
 };

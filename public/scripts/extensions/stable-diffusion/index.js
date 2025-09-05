@@ -41,7 +41,7 @@ import {
     stringFormat,
 } from '../../utils.js';
 import { getMessageTimeStamp, humanizedDateTime } from '../../RossAscends-mods.js';
-import { SECRET_KEYS, secret_state, writeSecret } from '../../secrets.js';
+import { SECRET_KEYS, secret_state } from '../../secrets.js';
 import { getNovelAnlas, getNovelUnlimitedImageGeneration, loadNovelSubscriptionData } from '../../nai-settings.js';
 import { getMultimodalCaption } from '../shared.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
@@ -51,11 +51,14 @@ import {
     SlashCommandArgument,
     SlashCommandNamedArgument,
 } from '../../slash-commands/SlashCommandArgument.js';
-import { debounce_timeout } from '../../constants.js';
+import { debounce_timeout, VIDEO_EXTENSIONS } from '../../constants.js';
 import { SlashCommandEnumValue } from '../../slash-commands/SlashCommandEnumValue.js';
-import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from '../../popup.js';
+import { callGenericPopup, Popup, POPUP_TYPE } from '../../popup.js';
 import { commonEnumProviders } from '../../slash-commands/SlashCommandCommonEnumsProvider.js';
 import { ToolManager } from '../../tool-calling.js';
+import { MacrosParser } from '../../macros.js';
+import { t } from '../../i18n.js';
+import { oai_settings } from '../../openai.js';
 
 export { MODULE_NAME };
 
@@ -72,15 +75,18 @@ const sources = {
     novel: 'novel',
     vlad: 'vlad',
     openai: 'openai',
+    aimlapi: 'aimlapi',
     comfy: 'comfy',
     togetherai: 'togetherai',
     drawthings: 'drawthings',
     pollinations: 'pollinations',
     stability: 'stability',
-    blockentropy: 'blockentropy',
     huggingface: 'huggingface',
     nanogpt: 'nanogpt',
     bfl: 'bfl',
+    falai: 'falai',
+    xai: 'xai',
+    google: 'google',
 };
 
 const initiators = {
@@ -218,7 +224,7 @@ const defaultSettings = {
     // CFG Scale
     scale_min: 1,
     scale_max: 30,
-    scale_step: 0.5,
+    scale_step: 0.1,
     scale: 7,
 
     // Sampler steps
@@ -300,6 +306,7 @@ const defaultSettings = {
     novel_sm: false,
     novel_sm_dyn: false,
     novel_decrisper: false,
+    novel_variety_boost: false,
 
     // OpenAI settings
     openai_style: 'vivid',
@@ -319,17 +326,34 @@ const defaultSettings = {
     wand_visible: false,
     command_visible: false,
     interactive_visible: false,
+    tool_visible: false,
 
     // Stability AI settings
     stability_style_preset: 'anime',
 
     // BFL API settings
     bfl_upsampling: false,
+
+    // Google settings
+    google_api: 'makersuite',
+    google_enhance: true,
 };
 
 const writePromptFieldsDebounced = debounce(writePromptFields, debounce_timeout.relaxed);
+const isVideo = (/** @type {string} */ format) => VIDEO_EXTENSIONS.includes(String(format || '').trim().toLowerCase());
 
-function processTriggers(chat, _, abort) {
+/**
+ * Generate interceptor for interactive mode triggers.
+ * @param {any[]} chat Chat messages
+ * @param {number} _ Context size (unused)
+ * @param {function(boolean): void} abort Abort generation function
+ * @param {string} type Type of the generation
+ */
+function processTriggers(chat, _, abort, type) {
+    if (type === 'quiet') {
+        return;
+    }
+
     if (extension_settings.sd.function_tool && ToolManager.isToolCallingSupported()) {
         return;
     }
@@ -459,6 +483,7 @@ async function loadSettings() {
     $('#sd_novel_sm_dyn').prop('checked', extension_settings.sd.novel_sm_dyn);
     $('#sd_novel_sm_dyn').prop('disabled', !extension_settings.sd.novel_sm);
     $('#sd_novel_decrisper').prop('checked', extension_settings.sd.novel_decrisper);
+    $('#sd_novel_variety_boost').prop('checked', extension_settings.sd.novel_variety_boost);
     $('#sd_pollinations_enhance').prop('checked', extension_settings.sd.pollinations_enhance);
     $('#sd_horde').prop('checked', extension_settings.sd.horde);
     $('#sd_horde_nsfw').prop('checked', extension_settings.sd.horde_nsfw);
@@ -488,10 +513,13 @@ async function loadSettings() {
     $('#sd_wand_visible').prop('checked', extension_settings.sd.wand_visible);
     $('#sd_command_visible').prop('checked', extension_settings.sd.command_visible);
     $('#sd_interactive_visible').prop('checked', extension_settings.sd.interactive_visible);
+    $('#sd_tool_visible').prop('checked', extension_settings.sd.tool_visible);
     $('#sd_stability_style_preset').val(extension_settings.sd.stability_style_preset);
     $('#sd_huggingface_model_id').val(extension_settings.sd.huggingface_model_id);
     $('#sd_function_tool').prop('checked', extension_settings.sd.function_tool);
     $('#sd_bfl_upsampling').prop('checked', extension_settings.sd.bfl_upsampling);
+    $('#sd_google_api').val(extension_settings.sd.google_api);
+    $('#sd_google_enhance').prop('checked', extension_settings.sd.google_enhance);
 
     for (const style of extension_settings.sd.styles) {
         const option = document.createElement('option');
@@ -769,7 +797,7 @@ async function onCharacterNegativePromptInput() {
 }
 
 function getCharacterPrefix() {
-    if (!this_chid || selected_group) {
+    if (this_chid === undefined || selected_group) {
         return '';
     }
 
@@ -783,7 +811,7 @@ function getCharacterPrefix() {
 }
 
 function getCharacterNegativePrefix() {
-    if (!this_chid || selected_group) {
+    if (this_chid === undefined || selected_group) {
         return '';
     }
 
@@ -841,6 +869,11 @@ function onCommandVisibleInput() {
 
 function onInteractiveVisibleInput() {
     extension_settings.sd.interactive_visible = !!$('#sd_interactive_visible').prop('checked');
+    saveSettingsDebounced();
+}
+
+function onToolVisibleInput() {
+    extension_settings.sd.tool_visible = !!$('#sd_tool_visible').prop('checked');
     saveSettingsDebounced();
 }
 
@@ -911,6 +944,10 @@ const resolutionOptions = {
     sd_res_768x1344: { width: 768, height: 1344, name: '768x1344 (3:4, SDXL)' },
     sd_res_1536x640: { width: 1536, height: 640, name: '1536x640 (24:10, SDXL)' },
     sd_res_640x1536: { width: 640, height: 1536, name: '640x1536 (10:24, SDXL)' },
+    sd_res_1536x1024: { width: 1536, height: 1024, name: '1536x1024 (3:2, ChatGPT)' },
+    sd_res_1024x1536: { width: 1024, height: 1536, name: '1024x1536 (2:3, ChatGPT)' },
+    sd_res_1024x1792: { width: 1024, height: 1792, name: '1024x1792 (4:7, DALL-E)' },
+    sd_res_1792x1024: { width: 1792, height: 1024, name: '1792x1024 (7:4, DALL-E)' },
 };
 
 function onResolutionChange() {
@@ -1020,6 +1057,11 @@ function onNovelDecrisperInput() {
     saveSettingsDebounced();
 }
 
+function onNovelVarietyBoostInput() {
+    extension_settings.sd.novel_variety_boost = !!$('#sd_novel_variety_boost').prop('checked');
+    saveSettingsDebounced();
+}
+
 function onPollinationsEnhanceInput() {
     extension_settings.sd.pollinations_enhance = !!$('#sd_pollinations_enhance').prop('checked');
     saveSettingsDebounced();
@@ -1104,7 +1146,8 @@ function onHrSecondPassStepsInput() {
 }
 
 function onComfyUrlInput() {
-    extension_settings.sd.comfy_url = $('#sd_comfy_url').val();
+    // Remove trailing slashes
+    extension_settings.sd.comfy_url = String($('#sd_comfy_url').val());
     saveSettingsDebounced();
 }
 
@@ -1116,38 +1159,6 @@ function onHFModelInput() {
 function onComfyWorkflowChange() {
     extension_settings.sd.comfy_workflow = $('#sd_comfy_workflow').find(':selected').val();
     saveSettingsDebounced();
-}
-
-async function onApiKeyClick(popupText, secretKey) {
-    const key = await callGenericPopup(popupText, POPUP_TYPE.INPUT, '', {
-        customButtons: [{
-            text: 'Remove Key',
-            appendAtEnd: true,
-            result: POPUP_RESULT.NEGATIVE,
-            action: async () => {
-                await writeSecret(secretKey, '');
-                toastr.success('API Key removed');
-                await loadSettingOptions();
-            },
-        }],
-    });
-
-    if (!key) {
-        return;
-    }
-
-    await writeSecret(secretKey, String(key));
-
-    toastr.success('API Key saved');
-    await loadSettingOptions();
-}
-
-async function onStabilityKeyClick() {
-    return onApiKeyClick('Stability AI API Key:', SECRET_KEYS.STABILITY);
-}
-
-async function onBflKeyClick() {
-    return onApiKeyClick('BFL API Key:', SECRET_KEYS.BFL);
 }
 
 function onBflUpsamplingInput() {
@@ -1273,13 +1284,16 @@ async function onModelChange() {
         sources.horde,
         sources.novel,
         sources.openai,
+        sources.aimlapi,
         sources.togetherai,
         sources.pollinations,
         sources.stability,
-        sources.blockentropy,
         sources.huggingface,
         sources.nanogpt,
         sources.bfl,
+        sources.falai,
+        sources.xai,
+        sources.google,
     ];
 
     if (cloudSources.includes(extension_settings.sd.source)) {
@@ -1474,6 +1488,9 @@ async function loadSamplers() {
         case sources.openai:
             samplers = ['N/A'];
             break;
+        case sources.aimlapi:
+            samplers = ['N/A'];
+            break;
         case sources.comfy:
             samplers = await loadComfySamplers();
             break;
@@ -1486,9 +1503,6 @@ async function loadSamplers() {
         case sources.stability:
             samplers = ['N/A'];
             break;
-        case sources.blockentropy:
-            samplers = ['N/A'];
-            break;
         case sources.huggingface:
             samplers = ['N/A'];
             break;
@@ -1496,6 +1510,12 @@ async function loadSamplers() {
             samplers = ['N/A'];
             break;
         case sources.bfl:
+            samplers = ['N/A'];
+            break;
+        case sources.xai:
+            samplers = ['N/A'];
+            break;
+        case sources.google:
             samplers = ['N/A'];
             break;
     }
@@ -1605,17 +1625,12 @@ async function loadVladSamplers() {
 }
 
 async function loadNovelSamplers() {
-    if (!secret_state[SECRET_KEYS.NOVEL]) {
-        console.debug('NovelAI API key is not set.');
-        return [];
-    }
-
     return [
+        'k_euler_ancestral',
+        'k_euler',
         'k_dpmpp_2m',
         'k_dpmpp_sde',
         'k_dpmpp_2s_ancestral',
-        'k_euler',
-        'k_euler_ancestral',
         'k_dpm_fast',
         'ddim',
     ];
@@ -1669,6 +1684,9 @@ async function loadModels() {
         case sources.openai:
             models = await loadOpenAiModels();
             break;
+        case sources.aimlapi:
+            models = await loadAimlapiModels();
+            break;
         case sources.comfy:
             models = await loadComfyModels();
             break;
@@ -1681,9 +1699,6 @@ async function loadModels() {
         case sources.stability:
             models = await loadStabilityModels();
             break;
-        case sources.blockentropy:
-            models = await loadBlockEntropyModels();
-            break;
         case sources.huggingface:
             models = [{ value: '', text: '<Enter Model ID above>' }];
             break;
@@ -1692,6 +1707,15 @@ async function loadModels() {
             break;
         case sources.bfl:
             models = await loadBflModels();
+            break;
+        case sources.falai:
+            models = await loadFalaiModels();
+            break;
+        case sources.xai:
+            models = await loadXAIModels();
+            break;
+        case sources.google:
+            models = await loadGoogleModels();
             break;
     }
 
@@ -1730,6 +1754,27 @@ async function loadBflModels() {
     ];
 }
 
+async function loadFalaiModels() {
+    $('#sd_falai_key').toggleClass('success', !!secret_state[SECRET_KEYS.FALAI]);
+
+    const result = await fetch('/api/sd/falai/models', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+    });
+
+    if (result.ok) {
+        return await result.json();
+    }
+
+    return [];
+}
+
+async function loadXAIModels() {
+    return [
+        { value: 'grok-2-image-1212', text: 'grok-2-image-1212' },
+    ];
+}
+
 async function loadPollinationsModels() {
     const result = await fetch('/api/sd/pollinations/models', {
         method: 'POST',
@@ -1756,26 +1801,6 @@ async function loadTogetherAIModels() {
 
     if (result.ok) {
         return await result.json();
-    }
-
-    return [];
-}
-
-async function loadBlockEntropyModels() {
-    if (!secret_state[SECRET_KEYS.BLOCKENTROPY]) {
-        console.debug('Block Entropy API key is not set.');
-        return [];
-    }
-
-    const result = await fetch('/api/sd/blockentropy/models', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-    });
-    console.log(result);
-    if (result.ok) {
-        const data = await result.json();
-        console.log(data);
-        return data;
     }
 
     return [];
@@ -1923,9 +1948,27 @@ async function loadDrawthingsModels() {
 
 async function loadOpenAiModels() {
     return [
-        { value: 'dall-e-3', text: 'DALL-E 3' },
-        { value: 'dall-e-2', text: 'DALL-E 2' },
+        { value: 'gpt-image-1', text: 'gpt-image-1' },
+        { value: 'dall-e-3', text: 'dall-e-3' },
+        { value: 'dall-e-2', text: 'dall-e-2' },
     ];
+}
+
+async function loadAimlapiModels() {
+    $('#sd_aimlapi_key').toggleClass('success', !!secret_state[SECRET_KEYS.AIMLAPI]);
+
+    const result = await fetch('/api/sd/aimlapi/models', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+    });
+
+    if (!result.ok) {
+        return [];
+    }
+
+    const json = await result.json();
+
+    return (json.data || []);
 }
 
 async function loadVladModels() {
@@ -1971,12 +2014,23 @@ async function loadVladModels() {
 }
 
 async function loadNovelModels() {
-    if (!secret_state[SECRET_KEYS.NOVEL]) {
-        console.debug('NovelAI API key is not set.');
-        return [];
-    }
-
     return [
+        {
+            value: 'nai-diffusion-4-5-full',
+            text: 'NAI Diffusion Anime V4.5 (Full)',
+        },
+        {
+            value: 'nai-diffusion-4-5-curated',
+            text: 'NAI Diffusion Anime V4.5 (Curated)',
+        },
+        {
+            value: 'nai-diffusion-4-full',
+            text: 'NAI Diffusion Anime V4 (Full)',
+        },
+        {
+            value: 'nai-diffusion-4-curated-preview',
+            text: 'NAI Diffusion Anime V4 (Curated)',
+        },
         {
             value: 'nai-diffusion-3',
             text: 'NAI Diffusion Anime V3',
@@ -1986,22 +2040,29 @@ async function loadNovelModels() {
             text: 'NAI Diffusion Anime V2',
         },
         {
-            value: 'nai-diffusion',
-            text: 'NAI Diffusion Anime V1 (Full)',
-        },
-        {
-            value: 'safe-diffusion',
-            text: 'NAI Diffusion Anime V1 (Curated)',
-        },
-        {
             value: 'nai-diffusion-furry-3',
             text: 'NAI Diffusion Furry V3',
         },
-        {
-            value: 'nai-diffusion-furry',
-            text: 'NAI Diffusion Furry',
-        },
     ];
+}
+
+async function loadGoogleModels() {
+    return [
+        'imagen-4.0-generate-preview-06-06',
+        'imagen-4.0-fast-generate-preview-06-06',
+        'imagen-4.0-ultra-generate-preview-06-06',
+        'imagen-3.0-generate-002',
+        'imagen-3.0-generate-001',
+        'imagen-3.0-fast-generate-001',
+        'imagen-3.0-capability-001',
+        'imagegeneration@006',
+        'imagegeneration@005',
+        'imagegeneration@002',
+    ].map(name => ({ value: name, text: name }));
+}
+
+function loadNovelSchedulers() {
+    return ['karras', 'native', 'exponential', 'polyexponential'];
 }
 
 async function loadComfyModels() {
@@ -2041,7 +2102,7 @@ async function loadSchedulers() {
             schedulers = await getAutoRemoteSchedulers();
             break;
         case sources.novel:
-            schedulers = ['N/A'];
+            schedulers = loadNovelSchedulers();
             break;
         case sources.vlad:
             schedulers = ['N/A'];
@@ -2050,6 +2111,9 @@ async function loadSchedulers() {
             schedulers = ['N/A'];
             break;
         case sources.openai:
+            schedulers = ['N/A'];
+            break;
+        case sources.aimlapi:
             schedulers = ['N/A'];
             break;
         case sources.togetherai:
@@ -2064,9 +2128,6 @@ async function loadSchedulers() {
         case sources.stability:
             schedulers = ['N/A'];
             break;
-        case sources.blockentropy:
-            schedulers = ['N/A'];
-            break;
         case sources.huggingface:
             schedulers = ['N/A'];
             break;
@@ -2074,6 +2135,15 @@ async function loadSchedulers() {
             schedulers = ['N/A'];
             break;
         case sources.bfl:
+            schedulers = ['N/A'];
+            break;
+        case sources.falai:
+            schedulers = ['N/A'];
+            break;
+        case sources.xai:
+            schedulers = ['N/A'];
+            break;
+        case sources.google:
             schedulers = ['N/A'];
             break;
     }
@@ -2140,6 +2210,9 @@ async function loadVaes() {
         case sources.openai:
             vaes = ['N/A'];
             break;
+        case sources.aimlapi:
+            vaes = ['N/A'];
+            break;
         case sources.togetherai:
             vaes = ['N/A'];
             break;
@@ -2152,9 +2225,6 @@ async function loadVaes() {
         case sources.stability:
             vaes = ['N/A'];
             break;
-        case sources.blockentropy:
-            vaes = ['N/A'];
-            break;
         case sources.huggingface:
             vaes = ['N/A'];
             break;
@@ -2162,6 +2232,15 @@ async function loadVaes() {
             vaes = ['N/A'];
             break;
         case sources.bfl:
+            vaes = ['N/A'];
+            break;
+        case sources.falai:
+            vaes = ['N/A'];
+            break;
+        case sources.xai:
+            vaes = ['N/A'];
+            break;
+        case sources.google:
             vaes = ['N/A'];
             break;
     }
@@ -2301,7 +2380,10 @@ function processReply(str) {
     str = str.replaceAll('“', '');
     str = str.replaceAll('\n', ', ');
     str = str.normalize('NFD');
-    str = str.replace(/[^a-zA-Z0-9.,:_(){}<>[\]\-']+/g, ' ');
+
+    // Strip out non-alphanumeric characters barring model syntax exceptions
+    str = str.replace(/[^a-zA-Z0-9.,:_(){}<>[\]\-'|#]+/g, ' ');
+
     str = str.replace(/\s+/g, ' '); // Collapse multiple whitespaces into one
     str = str.trim();
 
@@ -2402,14 +2484,14 @@ async function generatePicture(initiator, args, trigger, message, callback) {
 
     if (generationType === generationMode.BACKGROUND) {
         const callbackOriginal = callback;
-        callback = async function (prompt, imagePath, generationType, _negativePromptPrefix, _initiator, prefixedPrompt) {
+        callback = async function (prompt, imagePath, generationType, _negativePromptPrefix, _initiator, prefixedPrompt, format) {
             const imgUrl = `url("${encodeURI(imagePath)}")`;
             await eventSource.emit(event_types.FORCE_SET_BACKGROUND, { url: imgUrl, path: imagePath });
 
             if (typeof callbackOriginal === 'function') {
-                await callbackOriginal(prompt, imagePath, generationType, negativePromptPrefix, initiator, prefixedPrompt);
+                await callbackOriginal(prompt, imagePath, generationType, negativePromptPrefix, initiator, prefixedPrompt, format);
             } else {
-                await sendMessage(prompt, imagePath, generationType, negativePromptPrefix, initiator, prefixedPrompt);
+                await sendMessage(prompt, imagePath, generationType, negativePromptPrefix, initiator, prefixedPrompt, format);
             }
         };
     }
@@ -2430,8 +2512,13 @@ async function generatePicture(initiator, args, trigger, message, callback) {
         const combineNegatives = (prefix) => { negativePromptPrefix = combinePrefixes(negativePromptPrefix, prefix); };
 
         // generate the text prompt for the image
-        const prompt = await getPrompt(generationType, message, trigger, quietPrompt, combineNegatives);
+        let prompt = await getPrompt(generationType, message, trigger, quietPrompt, combineNegatives);
         console.log('Processed image prompt:', prompt);
+
+        // Extension hook for prompt processing
+        const eventData = { prompt, generationType, message, trigger };
+        await eventSource.emit(event_types.SD_PROMPT_PROCESSING, eventData);
+        prompt = eventData.prompt; // Allow extensions to modify the prompt
 
         $(stopButton).show();
         eventSource.once(CUSTOM_STOP_EVENT, stopListener);
@@ -2646,7 +2733,7 @@ function getUserAvatarUrl() {
  * @returns {Promise<string>} - A promise that resolves when the prompt generation completes.
  */
 async function generatePrompt(quietPrompt) {
-    const reply = await generateQuietPrompt(quietPrompt, false, false);
+    const reply = await generateQuietPrompt({ quietPrompt });
     const processedReply = processReply(reply);
 
     if (!processedReply) {
@@ -2706,6 +2793,9 @@ async function sendGenerationRequest(generationType, prompt, additionalNegativeP
             case sources.openai:
                 result = await generateOpenAiImage(prefixedPrompt, signal);
                 break;
+            case sources.aimlapi:
+                result = await generateAimlapiImage(prefixedPrompt, signal);
+                break;
             case sources.comfy:
                 result = await generateComfyImage(prefixedPrompt, negativePrompt, signal);
                 break;
@@ -2718,9 +2808,6 @@ async function sendGenerationRequest(generationType, prompt, additionalNegativeP
             case sources.stability:
                 result = await generateStabilityImage(prefixedPrompt, negativePrompt, signal);
                 break;
-            case sources.blockentropy:
-                result = await generateBlockEntropyImage(prefixedPrompt, negativePrompt, signal);
-                break;
             case sources.huggingface:
                 result = await generateHuggingFaceImage(prefixedPrompt, signal);
                 break;
@@ -2729,6 +2816,15 @@ async function sendGenerationRequest(generationType, prompt, additionalNegativeP
                 break;
             case sources.bfl:
                 result = await generateBflImage(prefixedPrompt, signal);
+                break;
+            case sources.falai:
+                result = await generateFalaiImage(prefixedPrompt, negativePrompt, signal);
+                break;
+            case sources.xai:
+                result = await generateXAIImage(prefixedPrompt, negativePrompt, signal);
+                break;
+            case sources.google:
+                result = await generateGoogleImage(prefixedPrompt, negativePrompt, signal);
                 break;
         }
 
@@ -2750,8 +2846,8 @@ async function sendGenerationRequest(generationType, prompt, additionalNegativeP
     const filename = `${characterName}_${humanizedDateTime()}`;
     const base64Image = await saveBase64AsFile(result.data, characterName, filename, result.format);
     callback
-        ? await callback(prompt, base64Image, generationType, additionalNegativePrefix, initiator, prefixedPrompt)
-        : await sendMessage(prompt, base64Image, generationType, additionalNegativePrefix, initiator, prefixedPrompt);
+        ? await callback(prompt, base64Image, generationType, additionalNegativePrefix, initiator, prefixedPrompt, result.format)
+        : await sendMessage(prompt, base64Image, generationType, additionalNegativePrefix, initiator, prefixedPrompt, result.format);
     return base64Image;
 }
 
@@ -2780,40 +2876,6 @@ async function generateTogetherAIImage(prompt, negativePrompt, signal) {
 
     if (result.ok) {
         return await result.json();
-    } else {
-        const text = await result.text();
-        throw new Error(text);
-    }
-}
-
-async function generateBlockEntropyImage(prompt, negativePrompt, signal) {
-    const result = await fetch('/api/sd/blockentropy/generate', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        signal: signal,
-        body: JSON.stringify({
-            prompt: prompt,
-            negative_prompt: negativePrompt,
-            model: extension_settings.sd.model,
-            steps: extension_settings.sd.steps,
-            width: extension_settings.sd.width,
-            height: extension_settings.sd.height,
-            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
-        }),
-    });
-
-    if (result.ok) {
-        const data = await result.json();
-
-        // Default format is 'jpg'
-        let format = 'jpg';
-
-        // Check if a format is specified in the result
-        if (data.format) {
-            format = data.format.toLowerCase();
-        }
-
-        return { format: format, data: data.images[0] };
     } else {
         const text = await result.text();
         throw new Error(text);
@@ -2901,20 +2963,39 @@ async function generateExtrasImage(prompt, negativePrompt, signal) {
  * Gets an aspect ratio for Stability that is the closest to the given width and height.
  * @param {number} width Target width
  * @param {number} height Target height
+ * @param {'google'|'stability'} source Source of the request, used to determine aspect ratio
  * @returns {string} Closest aspect ratio as a string
  */
-function getClosestAspectRatio(width, height) {
-    const aspectRatios = {
-        '16:9': 16 / 9,
-        '1:1': 1,
-        '21:9': 21 / 9,
-        '2:3': 2 / 3,
-        '3:2': 3 / 2,
-        '4:5': 4 / 5,
-        '5:4': 5 / 4,
-        '9:16': 9 / 16,
-        '9:21': 9 / 21,
-    };
+function getClosestAspectRatio(width, height, source) {
+    function getAspectRatios() {
+        switch (source) {
+            case 'stability':
+                return {
+                    '16:9': 16 / 9,
+                    '1:1': 1,
+                    '21:9': 21 / 9,
+                    '2:3': 2 / 3,
+                    '3:2': 3 / 2,
+                    '4:5': 4 / 5,
+                    '5:4': 5 / 4,
+                    '9:16': 9 / 16,
+                    '9:21': 9 / 21,
+                };
+            case 'google':
+                return {
+                    '1:1': 1,
+                    '16:9': 16 / 9,
+                    '9:16': 9 / 16,
+                    '4:3': 4 / 3,
+                    '3:4': 3 / 4,
+                };
+            default:
+                console.warn(`Unknown source "${source}" for aspect ratio calculation.`);
+                return null;
+        }
+    }
+
+    const aspectRatios = getAspectRatios() || { '1:1': 1 };
 
     const aspectRatio = width / height;
 
@@ -2953,7 +3034,7 @@ async function generateStabilityImage(prompt, negativePrompt, signal) {
                 payload: {
                     prompt: prompt.slice(0, PROMPT_LIMIT),
                     negative_prompt: negativePrompt.slice(0, PROMPT_LIMIT),
-                    aspect_ratio: getClosestAspectRatio(extension_settings.sd.width, extension_settings.sd.height),
+                    aspect_ratio: getClosestAspectRatio(extension_settings.sd.width, extension_settings.sd.height, 'stability'),
                     seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
                     style_preset: extension_settings.sd.stability_style_preset,
                     output_format: IMAGE_FORMAT,
@@ -3041,12 +3122,14 @@ async function generateAutoImage(prompt, negativePrompt, signal) {
         enable_hr: !!extension_settings.sd.enable_hr,
         hr_upscaler: extension_settings.sd.hr_upscaler,
         hr_scale: extension_settings.sd.hr_scale,
+        hr_additional_modules: [],
         denoising_strength: extension_settings.sd.denoising_strength,
         hr_second_pass_steps: extension_settings.sd.hr_second_pass_steps,
         seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
         override_settings: {
             CLIP_stop_at_last_layers: extension_settings.sd.clip_skip,
             sd_vae: isValidVae ? extension_settings.sd.vae : undefined,
+            forge_additional_modules: isValidVae ? [extension_settings.sd.vae] : undefined, // For SD Forge
         },
         override_settings_restore_afterwards: true,
         clip_skip: extension_settings.sd.clip_skip, // For SD.Next
@@ -3150,6 +3233,7 @@ async function generateNovelImage(prompt, negativePrompt, signal) {
             prompt: prompt,
             model: extension_settings.sd.model,
             sampler: extension_settings.sd.sampler,
+            scheduler: extension_settings.sd.scheduler,
             steps: steps,
             scale: extension_settings.sd.scale,
             width: width,
@@ -3157,6 +3241,7 @@ async function generateNovelImage(prompt, negativePrompt, signal) {
             negative_prompt: negativePrompt,
             upscale_ratio: extension_settings.sd.hr_scale,
             decrisper: extension_settings.sd.novel_decrisper,
+            variety_boost: extension_settings.sd.novel_variety_boost,
             sm: sm,
             sm_dyn: sm_dyn,
             seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
@@ -3177,13 +3262,20 @@ async function generateNovelImage(prompt, negativePrompt, signal) {
  * @returns {{steps: number, width: number, height: number, sm: boolean, sm_dyn: boolean}} - A tuple of parameters for NovelAI API.
  */
 function getNovelParams() {
-    let steps = extension_settings.sd.steps;
+    let steps = Math.min(extension_settings.sd.steps, 50);
     let width = extension_settings.sd.width;
     let height = extension_settings.sd.height;
     let sm = extension_settings.sd.novel_sm;
     let sm_dyn = extension_settings.sd.novel_sm_dyn;
 
-    if (extension_settings.sd.sampler === 'ddim') {
+    // If a source was never changed after the scheduler setting was added, we need to set it to 'karras' for compatibility.
+    const schedulers = loadNovelSchedulers();
+    if (!schedulers.includes(extension_settings.sd.scheduler)) {
+        extension_settings.sd.scheduler = 'karras';
+    }
+
+    if (extension_settings.sd.sampler === 'ddim' ||
+        ['nai-diffusion-4-curated-preview', 'nai-diffusion-4-full'].includes(extension_settings.sd.model)) {
         sm = false;
         sm_dyn = false;
     }
@@ -3243,9 +3335,11 @@ function getNovelParams() {
 async function generateOpenAiImage(prompt, signal) {
     const dalle2PromptLimit = 1000;
     const dalle3PromptLimit = 4000;
+    const gptImgPromptLimit = 32000;
 
     const isDalle2 = extension_settings.sd.model === 'dall-e-2';
     const isDalle3 = extension_settings.sd.model === 'dall-e-3';
+    const isGptImg = extension_settings.sd.model === 'gpt-image-1';
 
     if (isDalle2 && prompt.length > dalle2PromptLimit) {
         prompt = prompt.substring(0, dalle2PromptLimit);
@@ -3253,6 +3347,10 @@ async function generateOpenAiImage(prompt, signal) {
 
     if (isDalle3 && prompt.length > dalle3PromptLimit) {
         prompt = prompt.substring(0, dalle3PromptLimit);
+    }
+
+    if (isGptImg && prompt.length > gptImgPromptLimit) {
+        prompt = prompt.substring(0, gptImgPromptLimit);
     }
 
     let width = 1024;
@@ -3265,6 +3363,14 @@ async function generateOpenAiImage(prompt, signal) {
 
     if (isDalle3 && aspectRatio > 1) {
         width = 1792;
+    }
+
+    if (isGptImg && aspectRatio < 1) {
+        height = 1536;
+    }
+
+    if (isGptImg && aspectRatio > 1) {
+        width = 1536;
     }
 
     if (isDalle2 && (extension_settings.sd.width <= 512 && extension_settings.sd.height <= 512)) {
@@ -3283,7 +3389,8 @@ async function generateOpenAiImage(prompt, signal) {
             n: 1,
             quality: isDalle3 ? extension_settings.sd.openai_quality : undefined,
             style: isDalle3 ? extension_settings.sd.openai_style : undefined,
-            response_format: 'b64_json',
+            response_format: isDalle2 || isDalle3 ? 'b64_json' : undefined,
+            moderation: isGptImg ? 'low' : undefined,
         }),
     });
 
@@ -3294,6 +3401,47 @@ async function generateOpenAiImage(prompt, signal) {
         const text = await result.text();
         throw new Error(text);
     }
+}
+
+/**
+ * Universal image generation via AIMLAPI:
+ * - Builds the right request body for any model (OpenAI vs SD/Flux/Recraft).
+ * - Extracts the URL or base64 response.
+ * - If it’s a URL, fetches the image and converts to base64.
+ * - Returns { format: 'png', data: '<base64 string>' }, ready for saveBase64AsFile().
+ */
+async function generateAimlapiImage(prompt, signal) {
+    const model = extension_settings.sd.model.toLowerCase();
+    const isSdLike =
+        model.startsWith('flux/') ||
+        model.startsWith('stable') ||
+        model === 'recraft-v3' ||
+        model === 'triposr';
+
+    const body = { prompt, model };
+    if (isSdLike) {
+        body.steps = clamp(extension_settings.sd.steps, 1, 50);
+        body.guidance = clamp(extension_settings.sd.scale, 1.5, 5);
+        body.width = clamp(extension_settings.sd.width, 256, 1440);
+        body.height = clamp(extension_settings.sd.height, 256, 1440);
+        if (extension_settings.sd.seed >= 0) body.seed = extension_settings.sd.seed;
+    } else {
+        body.n = 1;
+        body.size = `${extension_settings.sd.width}x${extension_settings.sd.height}`;
+        body.quality = extension_settings.sd.openai_quality;
+        body.style = extension_settings.sd.openai_style;
+    }
+
+    const res = await fetch('/api/sd/aimlapi/generate-image', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        signal,
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await res.text());
+
+    const { format, data } = await res.json();
+    return { format, data };
 }
 
 /**
@@ -3314,7 +3462,6 @@ async function generateComfyImage(prompt, negativePrompt, signal) {
         'scale',
         'width',
         'height',
-        'clip_skip',
     ];
 
     const workflowResponse = await fetch('/api/sd/comfy/workflow', {
@@ -3336,6 +3483,9 @@ async function generateComfyImage(prompt, negativePrompt, signal) {
 
     const denoising_strength = extension_settings.sd.denoising_strength === undefined ? 1.0 : extension_settings.sd.denoising_strength;
     workflow = workflow.replaceAll('"%denoise%"', JSON.stringify(denoising_strength));
+
+    const clip_skip = isNaN(extension_settings.sd.clip_skip) ? -1 : -extension_settings.sd.clip_skip;
+    workflow = workflow.replaceAll('"%clip_skip%"', JSON.stringify(clip_skip));
 
     placeholders.forEach(ph => {
         workflow = workflow.replaceAll(`"%${ph}%"`, JSON.stringify(extension_settings.sd[ph]));
@@ -3383,7 +3533,8 @@ async function generateComfyImage(prompt, negativePrompt, signal) {
         const text = await promptResult.text();
         throw new Error(text);
     }
-    return { format: 'png', data: await promptResult.text() };
+    const { format, data } = await promptResult.json();
+    return { format, data };
 }
 
 
@@ -3468,6 +3619,101 @@ async function generateBflImage(prompt, signal) {
             height: clamp(extension_settings.sd.height, 256, 1440),
             prompt_upsampling: !!extension_settings.sd.bfl_upsampling,
             seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
+        }),
+    });
+
+    if (result.ok) {
+        const data = await result.json();
+        return { format: 'jpg', data: data.image };
+    } else {
+        const text = await result.text();
+        throw new Error(text);
+    }
+}
+
+/**
+ * Generates an image using the xAI API.
+ * @param {string} prompt The main instruction used to guide the image generation.
+ * @param {string} _negativePrompt Negative prompt is not used in this API
+ * @param {AbortSignal} signal An AbortSignal object that can be used to cancel the request.
+ * @returns {Promise<{format: string, data: string}>} A promise that resolves when the image generation and processing are complete.
+ */
+async function generateXAIImage(prompt, _negativePrompt, signal) {
+    const result = await fetch('/api/sd/xai/generate', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        signal: signal,
+        body: JSON.stringify({
+            prompt: prompt,
+            model: extension_settings.sd.model,
+        }),
+    });
+
+    if (result.ok) {
+        const data = await result.json();
+        return { format: 'jpg', data: data.image };
+    } else {
+        const text = await result.text();
+        throw new Error(text);
+    }
+}
+
+/**
+ * Generates an image using the FAL.AI API.
+ * @param {string} prompt - The main instruction used to guide the image generation.
+ * @param {string} negativePrompt - The negative prompt used to guide the image generation.
+ * @param {AbortSignal} signal - An AbortSignal object that can be used to cancel the request.
+ * @returns {Promise<{format: string, data: string}>} - A promise that resolves when the image generation and processing are complete.
+ */
+async function generateFalaiImage(prompt, negativePrompt, signal) {
+    const result = await fetch('/api/sd/falai/generate', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        signal: signal,
+        body: JSON.stringify({
+            prompt: prompt,
+            negative_prompt: negativePrompt,
+            model: extension_settings.sd.model,
+            steps: clamp(extension_settings.sd.steps, 1, 50),
+            guidance: clamp(extension_settings.sd.scale, 1.5, 5),
+            width: clamp(extension_settings.sd.width, 256, 1440),
+            height: clamp(extension_settings.sd.height, 256, 1440),
+            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
+        }),
+    });
+
+    if (result.ok) {
+        const data = await result.json();
+        return { format: 'jpg', data: data.image };
+    } else {
+        const text = await result.text();
+        throw new Error(text);
+    }
+}
+
+/**
+ * Generates an image using the Google Vertex AI API.
+ * @param {string} prompt The main instruction used to guide the image generation.
+ * @param {string} negativePrompt The instruction used to restrict the image generation.
+ * @param {AbortSignal} signal An AbortSignal object that can be used to cancel the request.
+ * @returns {Promise<{format: string, data: string}>} A promise that resolves when the image generation and processing are complete.
+ */
+async function generateGoogleImage(prompt, negativePrompt, signal) {
+    const result = await fetch('/api/google/generate-image', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        signal: signal,
+        body: JSON.stringify({
+            prompt: prompt,
+            aspect_ratio: getClosestAspectRatio(extension_settings.sd.width, extension_settings.sd.height, 'google'),
+            negative_prompt: negativePrompt,
+            model: extension_settings.sd.model,
+            enhance: extension_settings.sd.google_enhance,
+            api: extension_settings.sd.google_api || 'makersuite',
+            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
+            vertexai_auth_mode: oai_settings.vertexai_auth_mode,
+            vertexai_region: oai_settings.vertexai_region,
+            vertexai_express_project_id: oai_settings.vertexai_express_project_id,
         }),
     });
 
@@ -3628,8 +3874,9 @@ async function onComfyDeleteWorkflowClick() {
  * @param {string} additionalNegativePrefix Additional negative prompt used for the image generation
  * @param {string} initiator The initiator of the image generation
  * @param {string} prefixedPrompt Prompt with an attached specific prefix
+ * @param {string} format Format of the image (e.g., 'png', 'jpg')
  */
-async function sendMessage(prompt, image, generationType, additionalNegativePrefix, initiator, prefixedPrompt) {
+async function sendMessage(prompt, image, generationType, additionalNegativePrefix, initiator, prefixedPrompt, format) {
     const context = getContext();
     const name = context.groupId ? systemUserName : context.name2;
     const template = extension_settings.sd.prompts[generationMode.MESSAGE] || '{{prompt}}';
@@ -3649,11 +3896,17 @@ async function sendMessage(prompt, image, generationType, additionalNegativePref
             image_swipes: [image],
         },
     };
+    if (isVideo(format)) {
+        message.extra.video = image;
+        delete message.extra.image;
+        delete message.extra.image_swipes;
+        delete message.extra.inline_image;
+    }
     context.chat.push(message);
     const messageId = context.chat.length - 1;
-    await eventSource.emit(event_types.MESSAGE_RECEIVED, messageId);
+    await eventSource.emit(event_types.MESSAGE_RECEIVED, messageId, 'extension');
     context.addOneMessage(message);
-    await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId);
+    await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId, 'extension');
     await context.saveChat();
 }
 
@@ -3670,6 +3923,8 @@ function getVisibilityByInitiator(initiator) {
             return !!extension_settings.sd.wand_visible;
         case initiators.command:
             return !!extension_settings.sd.command_visible;
+        case initiators.tool:
+            return !!extension_settings.sd.tool_visible;
         default:
             return false;
     }
@@ -3682,7 +3937,6 @@ async function addSDGenButtons() {
     $('#sd_wand_container').append(buttonHtml);
     $(document.body).append(dropdownHtml);
 
-    const messageButton = $('.sd_message_gen');
     const button = $('#sd_gen');
     const dropdown = $('#sd_dropdown');
     dropdown.hide();
@@ -3748,6 +4002,8 @@ function isValidState() {
             return secret_state[SECRET_KEYS.NOVEL];
         case sources.openai:
             return secret_state[SECRET_KEYS.OPENAI];
+        case sources.aimlapi:
+            return secret_state[SECRET_KEYS.AIMLAPI];
         case sources.comfy:
             return true;
         case sources.togetherai:
@@ -3756,14 +4012,18 @@ function isValidState() {
             return true;
         case sources.stability:
             return secret_state[SECRET_KEYS.STABILITY];
-        case sources.blockentropy:
-            return secret_state[SECRET_KEYS.BLOCKENTROPY];
         case sources.huggingface:
             return secret_state[SECRET_KEYS.HUGGINGFACE];
         case sources.nanogpt:
             return secret_state[SECRET_KEYS.NANOGPT];
         case sources.bfl:
             return secret_state[SECRET_KEYS.BFL];
+        case sources.falai:
+            return secret_state[SECRET_KEYS.FALAI];
+        case sources.xai:
+            return secret_state[SECRET_KEYS.XAI];
+        case sources.google:
+            return secret_state[SECRET_KEYS.MAKERSUITE] || secret_state[SECRET_KEYS.VERTEXAI] || secret_state[SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT];
     }
 }
 
@@ -3825,7 +4085,7 @@ async function sdMessageButton(e) {
         }
     }
 
-    function saveGeneratedImage(prompt, image, generationType, negative) {
+    function saveGeneratedImage(prompt, image, generationType, negative, _initiator, _prefixedPrompt, format) {
         // Some message sources may not create the extra object
         if (typeof message.extra !== 'object' || message.extra === null) {
             message.extra = {};
@@ -3842,17 +4102,24 @@ async function sdMessageButton(e) {
             swipes.push(message.extra.image);
         }
 
-        swipes.push(image);
+        const isVideoFormat = isVideo(format);
 
-        // If already contains an image and it's not inline - leave it as is
-        message.extra.inline_image = !(message.extra.image && !message.extra.inline_image);
-        message.extra.image = image;
+        if (isVideoFormat) {
+            message.extra.video = image;
+        } else {
+            swipes.push(image);
+
+            // If already contains an image and it's not inline - leave it as is
+            message.extra.inline_image = !(message.extra.image && !message.extra.inline_image);
+            message.extra.image = image;
+        }
+
         message.extra.title = prompt;
         message.extra.generationType = generationType;
         message.extra.negative = negative;
         appendMediaToMessage(message, $mes);
 
-        context.saveChat();
+        return context.saveChat();
     }
 }
 
@@ -3935,7 +4202,7 @@ async function onImageSwiped({ message, element, direction }) {
             const generationType = message?.extra?.generationType ?? generationMode.FREE;
             const dimensions = setTypeSpecificDimensions(generationType);
             const originalSeed = extension_settings.sd.seed;
-            extension_settings.sd.seed = Math.round(Math.random() * (Math.pow(2, 32) - 1));
+            extension_settings.sd.seed = extension_settings.sd.seed >= 0 ? Math.round(Math.random() * (Math.pow(2, 32) - 1)) : -1;
             let imagePath = '';
 
             try {
@@ -3945,6 +4212,7 @@ async function onImageSwiped({ message, element, direction }) {
                 const hasNegative = message.extra.negative;
                 const prompt = await refinePrompt(message.extra.title, false);
                 const negativePromptPrefix = hasNegative ? await refinePrompt(message.extra.negative, true) : '';
+                message.extra.title = prompt;
                 const characterName = context.groupId
                     ? context.groups[Object.keys(context.groups).filter(x => context.groups[x].id === context.groupId)[0]]?.id?.toString()
                     : context.characters[context.characterId]?.name;
@@ -4394,6 +4662,7 @@ jQuery(async () => {
     $('#sd_novel_sm').on('input', onNovelSmInput);
     $('#sd_novel_sm_dyn').on('input', onNovelSmDynInput);
     $('#sd_novel_decrisper').on('input', onNovelDecrisperInput);
+    $('#sd_novel_variety_boost').on('input', onNovelVarietyBoostInput);
     $('#sd_pollinations_enhance').on('input', onPollinationsEnhanceInput);
     $('#sd_comfy_validate').on('click', validateComfyUrl);
     $('#sd_comfy_url').on('input', onComfyUrlInput);
@@ -4417,13 +4686,21 @@ jQuery(async () => {
     $('#sd_wand_visible').on('input', onWandVisibleInput);
     $('#sd_command_visible').on('input', onCommandVisibleInput);
     $('#sd_interactive_visible').on('input', onInteractiveVisibleInput);
+    $('#sd_tool_visible').on('input', onToolVisibleInput);
     $('#sd_swap_dimensions').on('click', onSwapDimensionsClick);
-    $('#sd_stability_key').on('click', onStabilityKeyClick);
     $('#sd_stability_style_preset').on('change', onStabilityStylePresetChange);
     $('#sd_huggingface_model_id').on('input', onHFModelInput);
     $('#sd_function_tool').on('input', onFunctionToolInput);
-    $('#sd_bfl_key').on('click', onBflKeyClick);
     $('#sd_bfl_upsampling').on('input', onBflUpsamplingInput);
+
+    $('#sd_google_api').on('input', function () {
+        extension_settings.sd.google_api = String($(this).val());
+        saveSettingsDebounced();
+    });
+    $('#sd_google_enhance').on('input', function () {
+        extension_settings.sd.google_enhance = $(this).prop('checked');
+        saveSettingsDebounced();
+    });
 
     if (!CSS.supports('field-sizing', 'content')) {
         $('.sd_settings .inline-drawer-toggle').on('click', function () {
@@ -4451,6 +4728,44 @@ jQuery(async () => {
 
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
 
+    [event_types.SECRET_WRITTEN, event_types.SECRET_DELETED, event_types.SECRET_ROTATED].forEach(event => {
+        eventSource.on(event, async (/** @type {string} */ key) => {
+            switch (key) {
+                case SECRET_KEYS.BFL:
+                case SECRET_KEYS.FALAI:
+                case SECRET_KEYS.STABILITY:
+                case SECRET_KEYS.AIMLAPI:
+                    await loadSettingOptions();
+                    break;
+            }
+        });
+    });
+
     await loadSettings();
     $('body').addClass('sd');
+
+    const getMacroValue = ({ isNegative }) => {
+        if (selected_group || this_chid === undefined) {
+            return '';
+        }
+
+        const key = getCharaFilename(this_chid);
+        let characterPrompt = key ? (extension_settings.sd.character_prompts[key] || '') : '';
+        let negativePrompt = key ? (extension_settings.sd.character_negative_prompts[key] || '') : '';
+
+        const context = getContext();
+        const sharedPromptData = context?.characters[this_chid]?.data?.extensions?.sd_character_prompt;
+
+        if (typeof sharedPromptData?.positive === 'string' && !characterPrompt && sharedPromptData.positive) {
+            characterPrompt = sharedPromptData.positive || '';
+        }
+        if (typeof sharedPromptData?.negative === 'string' && !negativePrompt && sharedPromptData.negative) {
+            negativePrompt = sharedPromptData.negative || '';
+        }
+
+        return isNegative ? negativePrompt : characterPrompt;
+    };
+
+    MacrosParser.registerMacro('charPrefix', () => getMacroValue({ isNegative: false }), t`Character's positive positive Image Generation prompt prefix`);
+    MacrosParser.registerMacro('charNegativePrefix', () => getMacroValue({ isNegative: true }), t`Character's negative Image Generation prompt prefix`);
 });

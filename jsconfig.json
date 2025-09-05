@@ -1,19 +1,20 @@
 {
     "compilerOptions": {
         "module": "ESNext",
-        "target": "ESNext",
-        "moduleResolution": "Node",
+        "target": "ES2023",
+        "moduleResolution": "Bundler",
         "strictNullChecks": true,
         "strictFunctionTypes": true,
         "allowUmdGlobalAccess": true,
         "allowSyntheticDefaultImports": true,
-        "resolveJsonModule": true
+        "resolveJsonModule": true,
+        "strictBindCallApply": true
     },
     "exclude": [
         "**/node_modules/**",
         "**/dist/**",
         "**/.git/**",
-        "public/lib/**",
+        "public/**",
         "backups/**",
         "data/**",
         "cache/**",

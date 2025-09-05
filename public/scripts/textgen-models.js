@@ -1,10 +1,13 @@
 import { DOMPurify } from '../lib.js';
 import { isMobile } from './RossAscends-mods.js';
-import { amount_gen, callPopup, eventSource, event_types, getRequestHeaders, max_context, online_status, setGenerationParamsFromPreset } from '../script.js';
+import { amount_gen, eventSource, event_types, getRequestHeaders, max_context, online_status, setGenerationParamsFromPreset } from '../script.js';
 import { textgenerationwebui_settings as textgen_settings, textgen_types } from './textgen-settings.js';
 import { tokenizers } from './tokenizers.js';
 import { renderTemplateAsync } from './templates.js';
 import { POPUP_TYPE, callGenericPopup } from './popup.js';
+import { t } from './i18n.js';
+import { accountStorage } from './util/AccountStorage.js';
+import { localizePagination, PAGINATION_TEMPLATE, textValueMatcher } from './utils.js';
 
 let mancerModels = [];
 let togetherModels = [];
@@ -21,44 +24,71 @@ export let openRouterModels = [];
  * @type {string[]}
  */
 const OPENROUTER_PROVIDERS = [
-    'OpenAI',
+    // An alphabetically separate set of very-dead providers is kept at the top of the list in the docs.
+    // These do not appear outside the docs: Anyscale, Cent-ML, HuggingFace ... SF Compute, Together 2, 01.AI
+    // As a visual check, AI21 is the topmost provider in the sidebar of https://openrouter.ai/models, thus we want to copy from this point and below.
+    // Providers endpoint: https://openrouter.ai/api/v1/providers
+    'AI21',
+    'AionLabs',
+    'Alibaba',
+    'Amazon Bedrock',
     'Anthropic',
+    'AtlasCloud',
+    'Atoma',
+    'Avian',
+    'Azure',
+    'BaseTen',
+    'Cerebras',
+    'Chutes',
+    'Cloudflare',
+    'Cohere',
+    'CrofAI',
+    'Crusoe',
+    'DeepInfra',
+    'DeepSeek',
+    'Enfer',
+    'Featherless',
+    'Fireworks',
+    'Friendli',
+    'GMICloud',
     'Google',
     'Google AI Studio',
     'Groq',
-    'SambaNova',
-    'Cohere',
-    'Mistral',
-    'Together',
-    'Together 2',
-    'Fireworks',
-    'DeepInfra',
-    'Lepton',
-    'Novita',
-    'Avian',
-    'Lambda',
-    'Azure',
-    'Modal',
-    'AnyScale',
-    'Replicate',
-    'Perplexity',
-    'Recursal',
-    'OctoAI',
-    'DeepSeek',
-    'Infermatic',
-    'AI21',
-    'Featherless',
-    'Inflection',
-    'xAI',
-    '01.AI',
-    'HuggingFace',
-    'Mancer',
-    'Mancer 2',
     'Hyperbolic',
-    'Hyperbolic 2',
-    'Lynn 2',
-    'Lynn',
-    'Reflection',
+    'Inception',
+    'InferenceNet',
+    'Infermatic',
+    'Inflection',
+    'InoCloud',
+    'Kluster',
+    'Lambda',
+    'Liquid',
+    'Mancer 2',
+    'Meta',
+    'Minimax',
+    'Mistral',
+    'Moonshot AI',
+    'Morph',
+    'NCompass',
+    'Nebius',
+    'NextBit',
+    'Nineteen',
+    'Novita',
+    'OpenAI',
+    'OpenInference',
+    'Parasail',
+    'Perplexity',
+    'Phala',
+    'SambaNova',
+    'Stealth',
+    'Switchpoint',
+    'Targon',
+    'Together',
+    'Ubicloud',
+    'Venice',
+    'WandB',
+    'xAI',
+    'Z.AI',
 ];
 
 export async function loadOllamaModels(data) {
@@ -111,24 +141,24 @@ export async function loadTogetherAIModels(data) {
         return;
     }
 
-    data.sort((a, b) => a.name.localeCompare(b.name));
+    data.sort((a, b) => a.id.localeCompare(b.id));
     togetherModels = data;
 
-    if (!data.find(x => x.name === textgen_settings.togetherai_model)) {
-        textgen_settings.togetherai_model = data[0]?.name || '';
+    if (!data.find(x => x.id === textgen_settings.togetherai_model)) {
+        textgen_settings.togetherai_model = data[0]?.id || '';
     }
 
     $('#model_togetherai_select').empty();
     for (const model of data) {
         // Hey buddy, I think you've got the wrong door.
-        if (model.display_type === 'image') {
+        if (model.type === 'image') {
             continue;
         }
 
         const option = document.createElement('option');
-        option.value = model.name;
+        option.value = model.id;
         option.text = model.display_name;
-        option.selected = model.name === textgen_settings.togetherai_model;
+        option.selected = model.id === textgen_settings.togetherai_model;
         $('#model_togetherai_select').append(option);
     }
 }
@@ -157,6 +187,24 @@ export async function loadInfermaticAIModels(data) {
         option.text = model.id;
         option.selected = model.id === textgen_settings.infermaticai_model;
         $('#model_infermaticai_select').append(option);
+    }
+}
+
+export function loadGenericModels(data) {
+    if (!Array.isArray(data)) {
+        console.error('Invalid Generic models data', data);
+        return;
+    }
+
+    data.sort((a, b) => a.id.localeCompare(b.id));
+    const dataList = $('#generic_model_fill');
+    dataList.empty();
+
+    for (const model of data) {
+        const option = document.createElement('option');
+        option.value = model.id;
+        option.text = model.id;
+        dataList.append(option);
     }
 }
 
@@ -226,7 +274,7 @@ export async function loadOpenRouterModels(data) {
     for (const model of data) {
         const option = document.createElement('option');
         option.value = model.id;
-        option.text = model.id;
+        option.text = model.name;
         option.selected = model.id === textgen_settings.openrouter_model;
         $('#openrouter_model').append(option);
     }
@@ -297,8 +345,6 @@ export async function loadFeatherlessModels(data) {
         return;
     }
 
-    // Sort the data by model id (default A-Z)
-    data.sort((a, b) => a.id.localeCompare(b.id));
     originalModels = data;  // Store the original data for search
     featherlessModels = data;
 
@@ -310,12 +356,10 @@ export async function loadFeatherlessModels(data) {
     populateClassSelection(data);
 
     // Retrieve the stored number of items per page or default to 10
-    const perPage = Number(localStorage.getItem(storageKey)) || 10;
+    const perPage = Number(accountStorage.getItem(storageKey)) || 10;
 
-    // Initialize pagination with the full set of models
-    const currentModelIndex = data.findIndex(x => x.id === textgen_settings.featherless_model);
-    featherlessCurrentPage = currentModelIndex >= 0 ? (currentModelIndex / perPage) + 1 : 1;
-    setupPagination(originalModels, perPage);
+    // Initialize pagination
+    applyFiltersAndSort();
 
     // Function to set up pagination (also used for filtered results)
     function setupPagination(models, perPage, pageNumber = featherlessCurrentPage) {
@@ -329,9 +373,7 @@ export async function loadFeatherlessModels(data) {
             showSizeChanger: false,
             prevText: '<',
             nextText: '>',
-            formatNavigator: function (currentPage, totalPage) {
-                return (currentPage - 1) * perPage + 1 + ' - ' + currentPage * perPage + ' of ' + totalPage * perPage;
-            },
+            formatNavigator: PAGINATION_TEMPLATE,
             showNavigator: true,
             callback: function (modelsOnPage, pagination) {
                 modelCardBlock.innerHTML = '';
@@ -353,15 +395,15 @@ export async function loadFeatherlessModels(data) {
 
                     const modelClassDiv = document.createElement('div');
                     modelClassDiv.classList.add('model-class');
-                    modelClassDiv.textContent = `Class: ${model.model_class || 'N/A'}`;
+                    modelClassDiv.textContent = t`Class` + `: ${model.model_class || 'N/A'}`;
 
                     const contextLengthDiv = document.createElement('div');
                     contextLengthDiv.classList.add('model-context-length');
-                    contextLengthDiv.textContent = `Context Length: ${model.context_length}`;
+                    contextLengthDiv.textContent = t`Context Length` + `: ${model.context_length}`;
 
                     const dateAddedDiv = document.createElement('div');
                     dateAddedDiv.classList.add('model-date-added');
-                    dateAddedDiv.textContent = `Added On: ${new Date(model.updated_at).toLocaleDateString()}`;
+                    dateAddedDiv.textContent = t`Added On` + `: ${new Date(model.created * 1000).toLocaleDateString()}`;
 
                     detailsContainer.appendChild(modelClassDiv);
                     detailsContainer.appendChild(contextLengthDiv);
@@ -385,10 +427,11 @@ export async function loadFeatherlessModels(data) {
 
                 // Update the current page value whenever the page changes
                 featherlessCurrentPage = pagination.pageNumber;
+                localizePagination(paginationContainer);
             },
             afterSizeSelectorChange: function (e) {
                 const newPerPage = e.target.value;
-                localStorage.setItem('Models_PerPage', newPerPage);
+                accountStorage.setItem(storageKey, newPerPage);
                 setupPagination(models, Number(newPerPage), featherlessCurrentPage); // Use the stored current page number
             },
         });
@@ -450,6 +493,7 @@ export async function loadFeatherlessModels(data) {
             featherlessTop = await fetchFeatherlessStats();
         }
         const featherlessIds = featherlessTop.map(stat => stat.id);
+
         if (selectedCategory === 'New') {
             featherlessNew = await fetchFeatherlessNew();
         }
@@ -471,7 +515,7 @@ export async function loadFeatherlessModels(data) {
                 return matchesSearch && matchesClass && matchesNew;
             }
             else {
-                return matchesSearch;
+                return matchesSearch && matchesClass;
             }
         });
 
@@ -480,12 +524,15 @@ export async function loadFeatherlessModels(data) {
         } else if (selectedSortOrder === 'desc') {
             filteredModels.sort((a, b) => b.id.localeCompare(a.id));
         } else if (selectedSortOrder === 'date_asc') {
-            filteredModels.sort((a, b) => a.updated_at.localeCompare(b.updated_at));
+            filteredModels.sort((a, b) => a.created - b.created);
         } else if (selectedSortOrder === 'date_desc') {
-            filteredModels.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+            filteredModels.sort((a, b) => b.created - a.created);
         }
 
-        setupPagination(filteredModels, Number(localStorage.getItem(storageKey)) || perPage, featherlessCurrentPage);
+        const currentModelIndex = filteredModels.findIndex(x => x.id === textgen_settings.featherless_model);
+        featherlessCurrentPage = currentModelIndex >= 0 ? (currentModelIndex / perPage) + 1 : 1;
+
+        setupPagination(filteredModels, Number(accountStorage.getItem(storageKey)) || perPage, featherlessCurrentPage);
     }
 
     // Required to keep the /model command function
@@ -506,7 +553,7 @@ async function fetchFeatherlessStats() {
 }
 
 async function fetchFeatherlessNew() {
-    const response = await fetch('https://api.featherless.ai/feather/models?sort=-created_at&perPage=10');
+    const response = await fetch('https://api.featherless.ai/feather/models?sort=-created_at&perPage=20');
     const data = await response.json();
     return data.items;
 }
@@ -555,7 +602,7 @@ function onTogetherModelSelect() {
     const modelName = String($('#model_togetherai_select').val());
     textgen_settings.togetherai_model = modelName;
     $('#api_button_textgenerationwebui').trigger('click');
-    const model = togetherModels.find(x => x.name === modelName);
+    const model = togetherModels.find(x => x.id === modelName);
     setGenerationParamsFromPreset({ max_length: model.context_length });
 }
 
@@ -625,7 +672,7 @@ function getMancerModelTemplate(option) {
 }
 
 function getTogetherModelTemplate(option) {
-    const model = togetherModels.find(x => x.name === option?.element?.value);
+    const model = togetherModels.find(x => x.id === option?.element?.value);
 
     if (!option.id || !model) {
         return option.text;
@@ -633,7 +680,7 @@ function getTogetherModelTemplate(option) {
 
     return $((`
         <div class="flex-container flexFlowColumn">
-            <div><strong>${DOMPurify.sanitize(model.name)}</strong> | <span>${model.context_length || '???'} tokens</span></div>
+            <div><strong>${DOMPurify.sanitize(model.id)}</strong> | <span>${model.context_length || '???'} tokens</span></div>
             <div><small>${DOMPurify.sanitize(model.description)}</small></div>
         </div>
     `));
@@ -725,7 +772,7 @@ async function downloadOllamaModel() {
 
         const html = `Enter a model tag, for example <code>llama2:latest</code>.<br>
         See <a target="_blank" href="https://ollama.ai/library">Library</a> for available models.`;
-        const name = await callPopup(html, 'input', '', { okButton: 'Download' });
+        const name = await callGenericPopup(html, POPUP_TYPE.INPUT, '', { okButton: 'Download' });
 
         if (!name) {
             return;
@@ -886,6 +933,10 @@ export function getCurrentDreamGenModelTokenizer() {
         return tokenizers.YI;
     } else if (model.id.startsWith('opus-v1-xl')) {
         return tokenizers.LLAMA;
+    } else if (model.id.startsWith('lucid-v1-medium')) {
+        return tokenizers.NEMO;
+    } else if (model.id.startsWith('lucid-v1-extra-large')) {
+        return tokenizers.LLAMA3;
     } else {
         return tokenizers.MISTRAL;
     }
@@ -915,71 +966,72 @@ export function initTextGenModels() {
 
     if (!isMobile()) {
         $('#mancer_model').select2({
-            placeholder: 'Select a model',
-            searchInputPlaceholder: 'Search models...',
+            placeholder: t`Select a model`,
+            searchInputPlaceholder: t`Search models...`,
             searchInputCssClass: 'text_pole',
             width: '100%',
             templateResult: getMancerModelTemplate,
         });
         $('#model_togetherai_select').select2({
-            placeholder: 'Select a model',
-            searchInputPlaceholder: 'Search models...',
+            placeholder: t`Select a model`,
+            searchInputPlaceholder: t`Search models...`,
             searchInputCssClass: 'text_pole',
             width: '100%',
             templateResult: getTogetherModelTemplate,
         });
         $('#ollama_model').select2({
-            placeholder: 'Select a model',
-            searchInputPlaceholder: 'Search models...',
+            placeholder: t`Select a model`,
+            searchInputPlaceholder: t`Search models...`,
             searchInputCssClass: 'text_pole',
             width: '100%',
         });
         $('#tabby_model').select2({
-            placeholder: '[Currently loaded]',
-            searchInputPlaceholder: 'Search models...',
+            placeholder: t`[Currently loaded]`,
+            searchInputPlaceholder: t`Search models...`,
             searchInputCssClass: 'text_pole',
             width: '100%',
             allowClear: true,
         });
         $('#model_infermaticai_select').select2({
-            placeholder: 'Select a model',
-            searchInputPlaceholder: 'Search models...',
+            placeholder: t`Select a model`,
+            searchInputPlaceholder: t`Search models...`,
             searchInputCssClass: 'text_pole',
             width: '100%',
             templateResult: getInfermaticAIModelTemplate,
         });
         $('#model_dreamgen_select').select2({
-            placeholder: 'Select a model',
-            searchInputPlaceholder: 'Search models...',
+            placeholder: t`Select a model`,
+            searchInputPlaceholder: t`Search models...`,
             searchInputCssClass: 'text_pole',
             width: '100%',
             templateResult: getDreamGenModelTemplate,
         });
         $('#openrouter_model').select2({
-            placeholder: 'Select a model',
-            searchInputPlaceholder: 'Search models...',
+            placeholder: t`Select a model`,
+            searchInputPlaceholder: t`Search models...`,
             searchInputCssClass: 'text_pole',
             width: '100%',
             templateResult: getOpenRouterModelTemplate,
+            matcher: textValueMatcher,
         });
         $('#vllm_model').select2({
-            placeholder: 'Select a model',
-            searchInputPlaceholder: 'Search models...',
+            placeholder: t`Select a model`,
+            searchInputPlaceholder: t`Search models...`,
             searchInputCssClass: 'text_pole',
             width: '100%',
             templateResult: getVllmModelTemplate,
         });
         $('#aphrodite_model').select2({
-            placeholder: 'Select a model',
-            searchInputPlaceholder: 'Search models...',
+            placeholder: t`Select a model`,
+            searchInputPlaceholder: t`Search models...`,
             searchInputCssClass: 'text_pole',
             width: '100%',
             templateResult: getAphroditeModelTemplate,
         });
         providersSelect.select2({
             sorter: data => data.sort((a, b) => a.text.localeCompare(b.text)),
-            placeholder: 'Select providers. No selection = all providers.',
-            searchInputPlaceholder: 'Search providers...',
+            placeholder: t`Select providers. No selection = all providers.`,
+            searchInputPlaceholder: t`Search providers...`,
             searchInputCssClass: 'text_pole',
             width: '100%',
             closeOnSelect: false,

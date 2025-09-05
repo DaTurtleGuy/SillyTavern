@@ -20,6 +20,7 @@ const regex_placement = {
     SLASH_COMMAND: 3,
     // 4 - sendAs (legacy)
     WORLD_INFO: 5,
+    REASONING: 6,
 };
 
 export const substitute_find_regex = {
@@ -94,7 +95,7 @@ function getRegexedString(rawString, placement, { characterOverride, isMarkdown,
             // Script applies to Generate and input is Generate
             (script.promptOnly && isPrompt) ||
             // Script applies to all cases when neither "only"s are true, but there's no need to do it when `isMarkdown`, the as source (chat history) should already be changed beforehand
-            (!script.markdownOnly && !script.promptOnly && !isMarkdown)
+            (!script.markdownOnly && !script.promptOnly && !isMarkdown && !isPrompt)
         ) {
             if (isEdit && !script.runOnEdit) {
                 console.debug(`getRegexedString: Skipping script ${script.scriptName} because it does not run on edit`);
@@ -102,8 +103,8 @@ function getRegexedString(rawString, placement, { characterOverride, isMarkdown,
             }
 
             // Check if the depth is within the min/max depth
-            if (typeof depth === 'number' && depth >= 0) {
-                if (!isNaN(script.minDepth) && script.minDepth !== null && script.minDepth >= 0 && depth < script.minDepth) {
+            if (typeof depth === 'number') {
+                if (!isNaN(script.minDepth) && script.minDepth !== null && script.minDepth >= -1 && depth < script.minDepth) {
                     console.debug(`getRegexedString: Skipping script ${script.scriptName} because depth ${depth} is less than minDepth ${script.minDepth}`);
                     return;
                 }
@@ -138,7 +139,7 @@ function runRegexScript(regexScript, rawString, { characterOverride } = {}) {
     }
 
     const getRegexString = () => {
-        switch(Number(regexScript.substituteRegex)) {
+        switch (Number(regexScript.substituteRegex)) {
             case substitute_find_regex.NONE:
                 return regexScript.findRegex;
             case substitute_find_regex.RAW:
@@ -162,9 +163,15 @@ function runRegexScript(regexScript, rawString, { characterOverride } = {}) {
     newString = rawString.replace(findRegex, function (match) {
         const args = [...arguments];
         const replaceString = regexScript.replaceString.replace(/{{match}}/gi, '$0');
-        const replaceWithGroups = replaceString.replaceAll(/\$(\d+)/g, (_, num) => {
-            // Get a full match or a capture group
-            const match = args[Number(num)];
+        const replaceWithGroups = replaceString.replaceAll(/\$(\d+)|\$<([^>]+)>/g, (_, num, groupName) => {
+            if (num) {
+                // Handle numbered capture groups ($1, $2, etc.)
+                match = args[Number(num)];
+            } else if (groupName) {
+                // Handle named capture groups ($<name>)
+                const groups = args[args.length - 1];
+                match = groups && typeof groups === 'object' && groups[groupName];
+            }
 
             // No match found - return the empty string
             if (!match) {
@@ -173,8 +180,6 @@ function runRegexScript(regexScript, rawString, { characterOverride } = {}) {
 
             // Remove trim strings from the match
             const filteredMatch = filterString(match, regexScript.trimStrings, { characterOverride });
-
-            // TODO: Handle overlay here
 
             return filteredMatch;
         });
