@@ -34,6 +34,10 @@ const isAndroid = process.platform === 'android';
 const useShallowCharacters = !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
 const useDiskCache = !!getConfigValue('performance.useDiskCache', true, 'boolean');
 
+
+const allCharactersCache = {};
+
+
 class DiskCache {
     /**
      * @type {string}
@@ -1031,6 +1035,80 @@ async function importFromPng(uploadPath, { request }, preservedFileName) {
     return '';
 }
 
+/**
+ * Sorts characters based on the last chat date (descending).
+ * Tie-breaker is the character's name (ascending).
+ * @param {object} a Character A
+ * @param {object} b Character B
+ * @returns {number}
+ */
+const characterSort = (a, b) => {
+    // Primary sort: date_last_chat descending
+    if (b.date_last_chat !== a.date_last_chat) {
+        return b.date_last_chat - a.date_last_chat;
+    }
+    // Secondary sort (tie-breaker): name ascending
+    return a.name.localeCompare(b.name);
+};
+
+
+/**
+ * Dynamically updates the /all characters cache for a specific user.
+ * This is more efficient than invalidating the entire cache.
+ * @param {import('express').Request} request The Express request object.
+ * @param {{action: 'add' | 'update' | 'remove', avatar: string}} options
+ */
+async function updateAllCharactersCache(request, { action, avatar }) {
+    const userCharacterFolder = request.user.directories.characters;
+
+    // If there's no cache for this user yet, we don't need to do anything.
+    // The next call to /all will build it from scratch.
+    if (!allCharactersCache[userCharacterFolder]) {
+        return;
+    }
+
+    console.log(`[Cache] Dynamic update: ${action} for ${avatar} in ${userCharacterFolder}`);
+    const cachedList = allCharactersCache[userCharacterFolder];
+
+    try {
+        switch (action) {
+            case 'update': {
+                const index = cachedList.findIndex(char => char.avatar === avatar);
+                if (index !== -1) {
+                    // Reprocess just this single character to get fresh data.
+                    const updatedCharacter = await processCharacter(avatar, request.user.directories, { shallow: useShallowCharacters });
+                    // Replace the old object with the new one at the same position.
+                    cachedList[index] = updatedCharacter;
+                    // Re-sort in case a property affecting sort order (like name or chat date) changed.
+                    cachedList.sort(characterSort);
+                }
+                break;
+            }
+
+            case 'add': {
+                // Process the newly added character.
+                const newCharacter = await processCharacter(avatar, request.user.directories, { shallow: useShallowCharacters });
+                // Add it to the list and re-sort to place it correctly.
+                cachedList.push(newCharacter);
+                cachedList.sort(characterSort);
+                break;
+            }
+
+            case 'remove': {
+                // Filter out the deleted character.
+                allCharactersCache[userCharacterFolder] = cachedList.filter(char => char.avatar !== avatar);
+                break;
+            }
+        }
+    } catch (error) {
+        // As a fallback, if any error occurs during the dynamic update,
+        // invalidate the cache to ensure data consistency on the next load.
+        console.error('[Cache] Dynamic update failed. Invalidating cache for safety.', error);
+        delete allCharactersCache[userCharacterFolder];
+    }
+}
+
+
 export const router = express.Router();
 
 router.post('/create', getFileNameValidationFunction('file_name'), async function (request, response) {
@@ -1048,12 +1126,14 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
 
         if (!request.file) {
             await writeCharacterData(DEFAULT_AVATAR_PATH, char, internalName, request);
+            await updateAllCharactersCache(request, { action: 'add', avatar: avatarName });
             return response.send(avatarName);
         } else {
             const crop = tryParse(request.query.crop);
             const uploadPath = path.join(request.file.destination, request.file.filename);
             await writeCharacterData(uploadPath, char, internalName, request, crop);
             fs.unlinkSync(uploadPath);
+            await updateAllCharactersCache(request, { action: 'add', avatar: avatarName });
             return response.send(avatarName);
         }
     } catch (err) {
@@ -1100,6 +1180,10 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
         // Remove the old character file
         fs.unlinkSync(oldAvatarPath);
 
+        // Update the cache by removing the old entry and adding the new one
+        await updateAllCharactersCache(request, { action: 'remove', avatar: oldAvatarName });
+        await updateAllCharactersCache(request, { action: 'add', avatar: newAvatarName });
+
         // Return new avatar name to ST
         return response.send({ avatar: newAvatarName });
     }
@@ -1142,6 +1226,9 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
             // Bust cache to reload the new avatar
             cacheBuster.bust(request, response);
         }
+
+        // Dynamically update the character in the cache
+        await updateAllCharactersCache(request, { action: 'update', avatar: request.body.avatar_url });
 
         return response.sendStatus(200);
     } catch (err) {
@@ -1189,6 +1276,10 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
         let newCharJSON = JSON.stringify(char);
         const targetFile = (request.body.avatar_url).replace('.png', '');
         await writeCharacterData(avatarPath, newCharJSON, targetFile, request);
+
+        // Dynamically update the character in the cache
+        await updateAllCharactersCache(request, { action: 'update', avatar: request.body.avatar_url });
+
         return response.sendStatus(200);
     } catch (err) {
         console.error('An error occurred, character edit invalidated.', err);
@@ -1227,6 +1318,10 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         //Accept either V1 or V2.
         if (validator.validate()) {
             await writeCharacterData(avatarPath, JSON.stringify(character), targetImg, request);
+
+            // Dynamically update the character in the cache
+            await updateAllCharactersCache(request, { action: 'update', avatar: update.avatar });
+
             response.sendStatus(200);
         } else {
             console.warn(validator.lastValidationError);
@@ -1267,6 +1362,9 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         return response.sendStatus(403);
     }
 
+    // Dynamically remove the character from the cache BEFORE deleting chats
+    await updateAllCharactersCache(request, { action: 'remove', avatar: request.body.avatar_url });
+
     if (request.body.delete_chats == true) {
         try {
             await fs.promises.rm(path.join(request.user.directories.chats, sanitize(dir_name)), { recursive: true, force: true });
@@ -1295,10 +1393,20 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
  */
 router.post('/all', async function (request, response) {
     try {
-        const files = fs.readdirSync(request.user.directories.characters);
+        const userCharacterFolder = request.user.directories.characters;
+
+        if (allCharactersCache[userCharacterFolder]) {
+            return response.send(allCharactersCache[userCharacterFolder]);
+        }
+        const files = fs.readdirSync(userCharacterFolder);
         const pngFiles = files.filter(file => file.endsWith('.png'));
         const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters }));
         const data = (await Promise.all(processingPromises)).filter(c => c.name);
+
+        // Sort the data on initial cache creation
+        data.sort(characterSort);
+
+        allCharactersCache[userCharacterFolder] = data;
         return response.send(data);
     } catch (err) {
         console.error(err);
@@ -1425,6 +1533,10 @@ router.post('/import', async function (request, response) {
             invalidateThumbnail(request.user.directories, 'avatar', `${preservedFileName}.png`);
         }
 
+        // Dynamically add the new character to the cache
+        const newAvatarName = `${fileName}.png`;
+        await updateAllCharactersCache(request, { action: 'add', avatar: newAvatarName });
+
         response.send({ file_name: fileName });
     } catch (err) {
         console.error(err);
@@ -1470,7 +1582,12 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
 
         fs.copyFileSync(filename, newFilename);
         console.info(`${filename} was copied to ${newFilename}`);
-        response.send({ path: path.parse(newFilename).base });
+
+        // Dynamically add the new character to the cache
+        const newAvatarName = path.parse(newFilename).base;
+        await updateAllCharactersCache(request, { action: 'add', avatar: newAvatarName });
+
+        response.send({ path: newAvatarName });
     }
     catch (error) {
         console.error(error);
