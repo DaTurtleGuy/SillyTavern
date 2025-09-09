@@ -4,14 +4,22 @@
 
 <div align="center">
 
-English | [German](readme-de_de.md) | [中文](readme-zh_cn.md) | [繁體中文](readme-zh_tw.md) | [日本語](readme-ja_jp.md) | [Русский](readme-ru_ru.md) | [한국어](readme-ko_kr.md)
-
 [![GitHub Stars](https://img.shields.io/github/stars/SillyTavern/SillyTavern.svg)](https://github.com/SillyTavern/SillyTavern/stargazers)
 [![GitHub Forks](https://img.shields.io/github/forks/SillyTavern/SillyTavern.svg)](https://github.com/SillyTavern/SillyTavern/forks)
 [![GitHub Issues](https://img.shields.io/github/issues/SillyTavern/SillyTavern.svg)](https://github.com/SillyTavern/SillyTavern/issues)
 [![GitHub Pull Requests](https://img.shields.io/github/issues-pr/SillyTavern/SillyTavern.svg)](https://github.com/SillyTavern/SillyTavern/pulls)
 
 </div>
+
+---
+TurtleTavern is a fork of SillyTavern with some features ive found missing in it, but really cant get the confidence to make a pull request for lol.
+
+
+Added things:
+* Turtle Buttons! Took inspiration of the buttons [Agnai](https://agnai.chat/) has for the group chats and bought them into my fork.
+* Persistant character creation date. Sometimes it would happen to me that ill have to move my characters from one instance of ST to another and i would lose which one was created when... So my fork creates a JSON file to keep track of that.
+* Character cache. This one reduces loading times for huge character libraries
+* Turtle Tools. There are currently two of them. One to replace smart quotes with normal quotes from the character card and another to remove all \* from the character card
 
 ---
 
