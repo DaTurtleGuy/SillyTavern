@@ -10585,6 +10585,31 @@ jQuery(async function () {
         select_group_chats();
     });
 
+    $('#rm_button_rebuild_index').on('click', async function () {
+        const $btn = $(this);
+        if ($btn.hasClass('disabled')) return;
+
+        $btn.addClass('disabled');
+        try {
+            const result = await fetch('/api/characters/rebuild-index', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+            });
+            const data = await result.json();
+            if (data.success) {
+                toastr.success(`Rebuilt index for ${data.count} characters`, 'Character Index');
+                await getCharacters();
+            } else {
+                toastr.error(data.error || 'Unknown error', 'Character Index');
+            }
+        } catch (err) {
+            console.error('Failed to rebuild character index:', err);
+            toastr.error('Failed to rebuild character index', 'Character Index');
+        } finally {
+            $btn.removeClass('disabled');
+        }
+    });
+
     $('#rm_button_back_from_group').on('click', function () {
         selected_button = 'characters';
         select_rm_characters();

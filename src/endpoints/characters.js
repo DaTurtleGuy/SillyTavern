@@ -24,6 +24,14 @@ import { getUserDirectories } from '../users.js';
 import { getChatInfo } from './chats.js';
 import { ByafParser } from '../byaf.js';
 import cacheBuster from '../middleware/cacheBuster.js';
+import {
+    needsRebuild,
+    getAllCharacters,
+    upsertCharacter,
+    deleteCharacter,
+    clearUserIndex,
+    rebuildIndex,
+} from '../character-index.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -33,6 +41,8 @@ const isAndroid = process.platform === 'android';
 // Use shallow character data for the character list
 const useShallowCharacters = !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
 const useDiskCache = !!getConfigValue('performance.useDiskCache', true, 'boolean');
+// Use SQLite index for character list (much more memory efficient)
+const useCharacterIndex = !!getConfigValue('performance.useCharacterIndex', true, 'boolean');
 
 
 const allCharactersCache = {};
@@ -415,10 +425,26 @@ const processCharacter = async (item, directories, { shallow }) => {
         // Load the date_added data from the JSON file
         let dateAddedData = getDictFromFile(JSONFILE) || {};
 
-        let jsonObject = getCharaCardV2(JSON.parse(imgData), directories, false);
+        const result = getCharaCardV2(JSON.parse(imgData), directories, false);
+        let jsonObject = result.jsonObject;
+        const wasFixed = result.wasFixed;
         jsonObject.avatar = item;
         const character = jsonObject;
-        character['json_data'] = imgData;
+
+        // If spec version mismatch was fixed, persist the corrected data to disk
+        if (wasFixed) {
+            try {
+                const imgBuffer = await fsPromises.readFile(imgFile);
+                const fixedBuffer = write(imgBuffer, JSON.stringify(jsonObject));
+                writeFileAtomicSync(imgFile, fixedBuffer);
+                character['json_data'] = JSON.stringify(jsonObject);
+            } catch (fixErr) {
+                console.warn(`Failed to persist fixed character data for ${item}:`, fixErr);
+                character['json_data'] = imgData;
+            }
+        } else {
+            character['json_data'] = imgData;
+        }
 
         const fileNameWithoutExtension = item.replace('.png', '');
         const charStat = fs.statSync(path.join(directories.characters, item));
@@ -527,9 +553,11 @@ function getDictFromFile(fileName, folderName = "") {
  * @param {object} jsonObject Character object
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {boolean} hoistDate Will set the chat and create_date fields to the current date if they are missing
- * @returns {object} Character object in Spec V2 format
+ * @returns {{ jsonObject: object, wasFixed: boolean }}
  */
 function getCharaCardV2(jsonObject, directories, hoistDate = true) {
+    let wasFixed = false;
+
     if (jsonObject.spec === undefined) {
         jsonObject = convertToV2(jsonObject, directories);
 
@@ -537,9 +565,11 @@ function getCharaCardV2(jsonObject, directories, hoistDate = true) {
             jsonObject.create_date = humanizedISO8601DateTime();
         }
     } else {
-        jsonObject = readFromV2(jsonObject);
+        const result = readFromV2(jsonObject);
+        jsonObject = result.char;
+        wasFixed = result.wasFixed;
     }
-    return jsonObject;
+    return { jsonObject, wasFixed };
 }
 
 /**
@@ -585,11 +615,14 @@ function unsetPrivateFields(char) {
 
 /**
  * @param {{ [x: string]: string; data: any; }} char
+ * @returns {{ char: object, wasFixed: boolean }}
  */
 function readFromV2(char) {
+    let wasFixed = false;
+
     if (_.isUndefined(char.data)) {
         console.warn(`Char ${char['name']} has Spec v2 data missing`);
-        return char;
+        return { char, wasFixed };
     }
 
     const fieldMappings = {
@@ -628,14 +661,15 @@ function readFromV2(char) {
             }
         }
         if (!_.isUndefined(char[charField]) && !_.isUndefined(v2Value) && String(char[charField]) !== String(v2Value)) {
-            console.warn(`Char ${char['name']} has Spec v2 data mismatch with Spec v1 for field: ${charField}`, char[charField], v2Value);
+            console.info(`Char ${char['name']} has Spec v2 data mismatch with Spec v1 for field: ${charField} - auto-fixing`);
+            wasFixed = true;
         }
         char[charField] = v2Value;
     });
 
     char['chat'] = char['chat'] ?? humanizedISO8601DateTime();
 
-    return char;
+    return { char, wasFixed };
 }
 
 /**
@@ -857,7 +891,8 @@ async function importFromCharX(uploadPath, { request }, preservedFileName) {
         throw new Error('Failed to extract card.json from CharX file');
     }
 
-    const card = readFromV2(JSON.parse(cardBuffer.toString()));
+    const cardResult = readFromV2(JSON.parse(cardBuffer.toString()));
+    const card = cardResult.char;
 
     if (card.spec === undefined) {
         throw new Error('Invalid CharX card file: missing spec field');
@@ -891,7 +926,8 @@ async function importFromByaf(uploadPath, { request }, preservedFileName) {
     console.info('Importing from BYAF');
 
     const byafData = await new ByafParser(data).parse();
-    const card = readFromV2(byafData.card);
+    const cardResult = readFromV2(byafData.card);
+    const card = cardResult.char;
     const fileName = preservedFileName || getPngName(card.name, request.user.directories);
     const result = await writeCharacterData(byafData.image, JSON.stringify(card), fileName, request);
     return result ? fileName : '';
@@ -914,7 +950,8 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         console.info(`Importing from ${jsonData.spec} json`);
         importRisuSprites(request.user.directories, jsonData);
         unsetPrivateFields(jsonData);
-        jsonData = readFromV2(jsonData);
+        const v2Result = readFromV2(jsonData);
+        jsonData = v2Result.char;
         jsonData['create_date'] = humanizedISO8601DateTime();
         const pngName = preservedFileName || getPngName(jsonData.data?.name || jsonData.name, request.user.directories);
         const char = JSON.stringify(jsonData);
@@ -997,7 +1034,8 @@ async function importFromPng(uploadPath, { request }, preservedFileName) {
         console.info(`Found a ${jsonData.spec} character file.`);
         importRisuSprites(request.user.directories, jsonData);
         unsetPrivateFields(jsonData);
-        jsonData = readFromV2(jsonData);
+        const v2Result = readFromV2(jsonData);
+        jsonData = v2Result.char;
         jsonData['create_date'] = humanizedISO8601DateTime();
         const char = JSON.stringify(jsonData);
         const result = await writeCharacterData(uploadPath, char, pngName, request);
@@ -1060,6 +1098,28 @@ const characterSort = (a, b) => {
  */
 async function updateAllCharactersCache(request, { action, avatar }) {
     const userCharacterFolder = request.user.directories.characters;
+
+    // Update SQLite index
+    if (useCharacterIndex) {
+        try {
+            switch (action) {
+                case 'update':
+                case 'add': {
+                    const character = await processCharacter(avatar, request.user.directories, { shallow: true });
+                    if (character && character.name) {
+                        upsertCharacter(userCharacterFolder, character);
+                    }
+                    break;
+                }
+                case 'remove': {
+                    deleteCharacter(userCharacterFolder, avatar);
+                    break;
+                }
+            }
+        } catch (error) {
+            console.error('[Character Index] Failed to update index:', error);
+        }
+    }
 
     // If there's no cache for this user yet, we don't need to do anything.
     // The next call to /all will build it from scratch.
@@ -1163,7 +1223,8 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
         const rawOldData = await readCharacterData(oldAvatarPath);
         if (rawOldData === undefined) throw new Error('Failed to read character file');
 
-        const oldData = getCharaCardV2(JSON.parse(rawOldData), request.user.directories);
+        const result = getCharaCardV2(JSON.parse(rawOldData), request.user.directories);
+        const oldData = result.jsonObject;
         _.set(oldData, 'data.name', newName);
         _.set(oldData, 'name', newName);
         const newData = JSON.stringify(oldData);
@@ -1378,6 +1439,30 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
 });
 
 /**
+ * HTTP POST endpoint for rebuilding the character index.
+ * Forces a complete rebuild of the SQLite character index.
+ */
+router.post('/rebuild-index', async function (request, response) {
+    try {
+        if (!useCharacterIndex) {
+            return response.status(400).json({ error: 'Character index is disabled' });
+        }
+
+        const userCharacterFolder = request.user.directories.characters;
+        console.log('[Character Index] Manual rebuild requested...');
+
+        clearUserIndex(userCharacterFolder);
+        const rebuiltCharacters = await rebuildIndex(userCharacterFolder, processCharacter, request.user.directories);
+
+        console.log(`[Character Index] Rebuilt ${rebuiltCharacters.length} characters`);
+        return response.json({ success: true, count: rebuiltCharacters.length });
+    } catch (err) {
+        console.error('[Character Index] Rebuild failed:', err);
+        response.status(500).json({ error: 'Failed to rebuild character index' });
+    }
+});
+
+/**
  * HTTP POST endpoint for the "/api/characters/all" route.
  *
  * This endpoint is responsible for reading character files from the `charactersPath` directory,
@@ -1395,6 +1480,23 @@ router.post('/all', async function (request, response) {
     try {
         const userCharacterFolder = request.user.directories.characters;
 
+        // Try SQLite index first (much more memory efficient)
+        if (useCharacterIndex) {
+            if (!needsRebuild(userCharacterFolder)) {
+                const indexedCharacters = getAllCharacters(userCharacterFolder);
+                if (indexedCharacters.length > 0) {
+                    indexedCharacters.sort(characterSort);
+                    return response.send(indexedCharacters);
+                }
+            }
+            // Index needs rebuild or is empty - rebuild it
+            console.log('[Character Index] Rebuilding character index...');
+            const rebuiltCharacters = await rebuildIndex(userCharacterFolder, processCharacter, request.user.directories);
+            rebuiltCharacters.sort(characterSort);
+            return response.send(rebuiltCharacters);
+        }
+
+        // Fallback to legacy in-memory cache
         if (allCharactersCache[userCharacterFolder]) {
             return response.send(allCharactersCache[userCharacterFolder]);
         }
@@ -1622,7 +1724,8 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
                 try {
                     const json = await readCharacterData(filename);
                     if (json === undefined) return response.sendStatus(400);
-                    const jsonObject = getCharaCardV2(JSON.parse(json), request.user.directories);
+                    const result = getCharaCardV2(JSON.parse(json), request.user.directories);
+                    const jsonObject = result.jsonObject;
                     unsetPrivateFields(jsonObject);
                     return response.type('json').send(JSON.stringify(jsonObject, null, 4));
                 }
