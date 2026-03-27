@@ -72,8 +72,6 @@ import {
     getGroupBlock,
     getGroupCharacterCards,
     getGroupDepthPrompts,
-    hideTurtleButtons,
-    populateFloatingCharacters,
 } from './scripts/group-chats.js';
 
 import {
@@ -97,6 +95,8 @@ import {
     generatedTextFiltered,
     applyStylePins,
 } from './scripts/power-user.js';
+
+import { initTurtleButtons, hideTurtleButtons } from './scripts/turtle-buttons.js';
 
 import {
     setOpenAIMessageExamples,
@@ -272,7 +272,7 @@ import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMess
 import { event_types, eventSource } from './scripts/events.js';
 
 // API OBJECT FOR EXTERNAL WIRING
-globalThis.TurtleTavern = {
+globalThis.SillyTavern = {
     libs,
     getContext,
 };
@@ -353,7 +353,7 @@ export let converter;
 
 // array for prompt token calculations
 
-export const systemUserName = 'TurtleTavern System';
+export const systemUserName = 'SillyTavern System';
 export const neutralCharacterName = 'Assistant';
 let default_user_name = 'User';
 export let name1 = default_user_name;
@@ -366,7 +366,7 @@ let chat_create_date = '';
 let firstRun = false;
 let settingsReady = false;
 let currentVersion = '0.0.0';
-export let displayVersion = 'TurtleTavern';
+export let displayVersion = 'SillyTavern';
 
 let generation_started = new Date();
 /** @type {import('./scripts/char-data.js').v1CharData[]} */
@@ -381,7 +381,7 @@ export const default_avatar = 'img/ai4.png';
 export const system_avatar = 'img/five.png';
 export const comment_avatar = 'img/quill.png';
 export const default_user_avatar = 'img/user-default.png';
-export let CLIENT_VERSION = 'TurtleTavern:UNKNOWN:Cohee#1207'; // For Horde header
+export let CLIENT_VERSION = 'SillyTavern:UNKNOWN:Cohee#1207'; // For Horde header
 let optionsPopper = Popper.createPopper(document.getElementById('options_button'), document.getElementById('options'), {
     placement: 'top-start',
 });
@@ -451,7 +451,7 @@ async function getClientVersion() {
         const response = await fetch('/version');
         const data = await response.json();
         CLIENT_VERSION = data.agent;
-        displayVersion = `TurtleTavern ${data.pkgVersion}`;
+        displayVersion = `SillyTavern ${data.pkgVersion}`;
         currentVersion = data.pkgVersion;
 
         if (data.gitRevision && data.gitBranch) {
@@ -696,6 +696,7 @@ async function firstLoadInit() {
     initItemizedPrompts();
     addDebugFunctions();
     doDailyExtensionUpdatesCheck();
+    initTurtleButtons();
     await hideLoader();
     await fixViewport();
     await eventSource.emit(event_types.APP_READY);
@@ -9414,34 +9415,6 @@ jQuery(async function () {
         localStorage.setItem("REPLACE_VOWELS", REPLACE_VOWELS ? "true" : "false");
     })
 
-    $("#rm_group_activation_strategy").change(function () {
-        populateFloatingCharacters();
-    });
-
-    function adjustTurtleDimensions() {
-        let topBarWidth = $("#top-bar").width();
-        let turtleButtons = $("#turtle_buttons");
-        const areButtonsVisible = $("#buttons_container").is(":visible");
-        if (!areButtonsVisible) turtleButtons.width("auto");
-        else turtleButtons.width(topBarWidth);
-        //console.log(areButtonsVisible);
-        let leftPosition = (window.innerWidth - topBarWidth) / 2;
-        turtleButtons.css({
-            "left": leftPosition + "px",
-            "position": "fixed",
-        });
-    }
-
-    $("#turtle_close").click(function () {
-        $("#buttons_container").toggle();
-        adjustTurtleDimensions();
-    });
-    $(window).resize(adjustTurtleDimensions);
-    adjustTurtleDimensions();
-    setInterval(() => {
-        adjustTurtleDimensions();
-    }, 500);
-
     $(document).on('click', '.api_loading', () => cancelStatusCheck('Canceled because connecting was manually canceled'));
 
     //////////INPUT BAR FOCUS-KEEPING LOGIC/////////////
@@ -10589,7 +10562,7 @@ jQuery(async function () {
         }
 
         if (selected_group && file.name.endsWith('.json')) {
-            toastr.warning('Only TurtleTavern\'s own format is supported for group chat imports. Sorry!');
+            toastr.warning('Only SillyTavern\'s own format is supported for group chat imports. Sorry!');
             return;
         }
 

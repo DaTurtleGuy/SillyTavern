@@ -7408,21 +7408,23 @@
                                 </div>
                             </div>
                             <hr>
-                            <div id="turtle_char_div">
-                                <div style="display: flex; align-items: center ; gap: 10px">
-                                    <span>Tools</span>
-                                    <img src="https://files.catbox.moe/a2c7fz.png" alt=""
-                                        style="width: auto; height: 20px">
+                            <div id="turtle_char_div" class="inline-drawer">
+                                <div class="inline-drawer-toggle inline-drawer-header">
+                                    <div class="title_restorable flexGap5 wide100p">
+                                        <span class="flex1">Turtle Tools</span>
+                                    </div>
+                                    <div class="flex-container widthFitContent">
+                                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down interactable"></div>
+                                    </div>
                                 </div>
-                                <div class="daTurtleButtons"
-                                    style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-                                    <button id="replaceAllAsterisks" type="button" style="width: 100px;"
-                                        class="menu_button interactable" tabindex="0">Remove *</button>
-                                    <button id="replaceQuotes" type="button" style="width: 100px;"
-                                        class="menu_button interactable" tabindex="0">Ensure "</button>
-                                    <!-- <button id="clearThumbnailCache" class="menu_button">Clear Thumbnail Cache</button> -->
+                                <div class="inline-drawer-content">
+                                    <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 5px 0;">
+                                        <button id="replaceAllAsterisks" type="button" style="width: 100px;"
+                                            class="menu_button interactable" tabindex="0" title="Remove all asterisks from character fields">Remove *</button>
+                                        <button id="replaceQuotes" type="button" style="width: 100px;"
+                                            class="menu_button interactable" tabindex="0" title="Ensure proper quote formatting">Ensure "</button>
+                                    </div>
                                 </div>
-
                             </div>
                             <div id="spoiler_free_desc" class="inline-drawer flex-container flexFlowColumn flexNoGap">
                                 <div class="inline-drawer-toggle inline-drawer-header padding0 gap5px standoutHeader">
@@ -7588,7 +7590,7 @@
                                                     <option value="2" data-i18n="Manual">Manual</option>
                                                     <option value="0" data-i18n="Natural order">Natural order</option>
                                                     <option value="1" data-i18n="List order">List order</option>
-                                                    <option value="3">Turtle Buttons</option>
+                                                    <option value="3" data-i18n="Turtle Buttons">Turtle Buttons</option>
                                                     <option value="4" data-i18n="Pooled order">Pooled order</option>
                                                 </select>
                                             </div>
@@ -7822,18 +7824,18 @@
         </div>
     </div>
 
-    <div class="turtle_templates">
-        <div class="turtleButton">
+    <div class="template_element" id="turtle_button_template">
+        <div class="turtle_button">
             <img src="" alt="">
-            <p>Name</p>
+            <p class="turtle_button_name">Name</p>
         </div>
     </div>
 
     <div id="turtle_buttons" style="display: none;">
-        <button id="turtle_close" class="menu_button">X</button>
-        <div id="buttons_container">
-
-        </div>
+        <button id="turtle_close" class="menu_button" title="Toggle turtle buttons">
+            <i class="fa-solid fa-times"></i>
+        </button>
+        <div id="buttons_container"></div>
     </div>
     <!-- various fullscreen popups -->
     <div name="templatesAndPopupsWrapper"> <!--this div is just for IDE sanity for quick collapsing-->

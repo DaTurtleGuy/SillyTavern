@@ -51,6 +51,8 @@ export const event_types = {
     GENERATE_AFTER_COMBINE_PROMPTS: 'generate_after_combine_prompts',
     GENERATE_AFTER_DATA: 'generate_after_data',
     GROUP_MEMBER_DRAFTED: 'group_member_drafted',
+    TURTLE_BUTTONS_SHOWN: 'turtle_buttons_shown',
+    TURTLE_BUTTONS_HIDDEN: 'turtle_buttons_hidden',
     GROUP_WRAPPER_STARTED: 'group_wrapper_started',
     GROUP_WRAPPER_FINISHED: 'group_wrapper_finished',
     WORLD_INFO_ACTIVATED: 'world_info_activated',
