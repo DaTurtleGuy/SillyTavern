@@ -55,6 +55,10 @@ import {
     setupLogLevel,
     setWindowTitle,
     getConfigValue,
+    getActiveStreams,
+    initMemoryLog,
+    memoryLog,
+    closeMemoryLog,
 } from './util.js';
 import { UPLOADS_DIRECTORY } from './constants.js';
 import { ensureThumbnailCache } from './endpoints/thumbnails.js';
@@ -96,6 +100,20 @@ app.use(helmet({
 }));
 app.use(compression());
 app.use(responseTime());
+
+app.use((req, res, next) => {
+    const startMem = process.memoryUsage().heapUsed;
+    const startTime = Date.now();
+    res.on('finish', () => {
+        const endMem = process.memoryUsage().heapUsed;
+        const deltaKB = Math.round((endMem - startMem) / 1024);
+        const elapsedMs = Date.now() - startTime;
+        if (Math.abs(deltaKB) > 1024) {
+            memoryLog(`[Memory] ${req.method} ${req.path} — ${deltaKB > 0 ? '+' : ''}${deltaKB}KB heap delta, ${elapsedMs}ms`);
+        }
+    });
+    next();
+});
 
 app.use(bodyParser.json({ limit: '500mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '500mb' }));
@@ -281,6 +299,9 @@ async function preSetupTasks() {
     const exitProcess = async () => {
         if (isExiting) return;
         isExiting = true;
+        const mem = process.memoryUsage();
+        memoryLog(`[Memory] Shutdown snapshot — RSS: ${Math.round(mem.rss / 1024 / 1024)}MB | Heap: ${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB | Active streams: ${getActiveStreams()}`);
+        closeMemoryLog();
         await statsOnExit();
         if (typeof cleanupPlugins === 'function') {
             await cleanupPlugins();
@@ -301,6 +322,19 @@ async function preSetupTasks() {
 
     // Add request proxy.
     initRequestProxy({ enabled: cliArgs.requestProxyEnabled, url: cliArgs.requestProxyUrl, bypass: cliArgs.requestProxyBypass });
+
+    const memoryLogPath = initMemoryLog(cliArgs.dataRoot);
+    console.log(`Memory debug log: ${memoryLogPath}`);
+
+    setInterval(() => {
+        const mem = process.memoryUsage();
+        const rss = Math.round(mem.rss / 1024 / 1024);
+        const heapUsed = Math.round(mem.heapUsed / 1024 / 1024);
+        const heapTotal = Math.round(mem.heapTotal / 1024 / 1024);
+        const external = Math.round(mem.external / 1024 / 1024);
+        const streams = getActiveStreams();
+        memoryLog(`[Memory] RSS: ${rss}MB | Heap: ${heapUsed}/${heapTotal}MB | External: ${external}MB | Active streams: ${streams}`);
+    }, 60_000);
 
     // Wait for frontend libs to compile
     await webpackMiddleware.runWebpackCompiler();

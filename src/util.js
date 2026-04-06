@@ -502,6 +502,38 @@ export function getImages(directoryPath, sortBy = 'name') {
  * @param {import('node-fetch').Response} from The Fetch API response to pipe from.
  * @param {import('express').Response} to The Express response to pipe to.
  */
+let activeStreams = 0;
+
+export function getActiveStreams() {
+    return activeStreams;
+}
+
+let memoryLogStream = null;
+
+export function initMemoryLog(logDirectory) {
+    const logPath = path.join(logDirectory, 'memory-debug.log');
+    memoryLogStream = fs.createWriteStream(logPath, { flags: 'a' });
+    memoryLogStream.write(`\n--- Memory logging started at ${new Date().toISOString()} ---\n`);
+    return logPath;
+}
+
+export function memoryLog(message) {
+    const line = `[${new Date().toISOString()}] ${message}\n`;
+    if (memoryLogStream) {
+        memoryLogStream.write(line);
+    } else {
+        process.stdout.write(line);
+    }
+}
+
+export function closeMemoryLog() {
+    if (memoryLogStream) {
+        memoryLogStream.write(`--- Memory logging stopped at ${new Date().toISOString()} ---\n`);
+        memoryLogStream.end();
+        memoryLogStream = null;
+    }
+}
+
 export function forwardFetchResponse(from, to) {
     let statusCode = from.status;
     let statusText = from.statusText;
@@ -510,11 +542,6 @@ export function forwardFetchResponse(from, to) {
         console.warn(`Streaming request failed with status ${statusCode} ${statusText}`);
     }
 
-    // Avoid sending 401 responses as they reset the client Basic auth.
-    // This can produce an interesting artifact as "400 Unauthorized", but it's not out of spec.
-    // https://www.rfc-editor.org/rfc/rfc9110.html#name-overview-of-status-codes
-    // "The reason phrases listed here are only recommendations -- they can be replaced by local
-    //  equivalents or left out altogether without affecting the protocol."
     if (statusCode === 401) {
         statusCode = 400;
     }
@@ -523,16 +550,32 @@ export function forwardFetchResponse(from, to) {
     to.statusMessage = statusText;
 
     if (from.body && to.socket) {
+        activeStreams++;
+        memoryLog(`[Stream] Started (active: ${activeStreams})`);
+
         from.body.pipe(to);
 
-        to.socket.on('close', function () {
-            if (from.body instanceof Readable) from.body.destroy(); // Close the remote stream
+        let cleanedUp = false;
+        function cleanup(reason) {
+            if (cleanedUp) return;
+            cleanedUp = true;
+            activeStreams = Math.max(0, activeStreams - 1);
+            memoryLog(`[Stream] ${reason} (active: ${activeStreams})`);
+        }
 
-            to.end(); // End the Express response
+        to.socket.on('close', function () {
+            if (from.body instanceof Readable) from.body.destroy();
+            cleanup('Socket closed');
+            to.end();
         });
 
         from.body.on('end', function () {
-            console.info('Streaming request finished');
+            cleanup('Body ended');
+            to.end();
+        });
+
+        from.body.on('error', function (err) {
+            cleanup(`Body error: ${err.message}`);
             to.end();
         });
     } else {
