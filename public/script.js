@@ -11089,6 +11089,10 @@ jQuery(async function () {
     $(document).on('click', '#massReplace', function () {
         massReplace();
     });
+
+    $(document).on('click', '#chatReplace', function () {
+        chatReplace();
+    });
 });
 
 
@@ -11313,6 +11317,121 @@ async function regenerateFirstMessageIfNeeded() {
         await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId, 'first_message');
         await saveChatConditional();
     }
+}
+
+async function chatReplace() {
+    if (!chat || chat.length === 0) {
+        toastr.warning('No chat loaded.');
+        return;
+    }
+
+    const types = [
+        { id: 'type_ai', label: 'AI Messages' },
+        { id: 'type_user', label: 'User Messages' },
+        { id: 'type_system', label: 'System Messages' },
+    ];
+
+    const html = document.createElement('div');
+    html.innerHTML = `
+        <div style="margin-bottom:10px">
+            <label style="display:block;margin-bottom:4px"><b>Find:</b></label>
+            <input type="text" id="chat_replace_find" class="text_pole" style="width:100%;box-sizing:border-box" />
+            <label style="display:block;margin-bottom:4px;margin-top:8px"><b>Replace with:</b></label>
+            <input type="text" id="chat_replace_replace" class="text_pole" style="width:100%;box-sizing:border-box" />
+        </div>
+        <div style="margin-bottom:4px"><b>Message types:</b></div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap">
+            ${types.map(t =>
+                `<label class="checkbox_label"><input type="checkbox" id="${t.id}" checked /><span>${t.label}</span></label>`
+            ).join('')}
+        </div>
+    `;
+
+    const popup = new Popup(html, POPUP_TYPE.CONFIRM, null, {
+        okButton: 'Preview',
+        cancelButton: 'Cancel',
+        wide: true,
+    });
+
+    const result = await popup.show();
+    if (result !== POPUP_RESULT.AFFIRMATIVE) return;
+
+    const findText = popup.dlg.querySelector('#chat_replace_find').value;
+    const replaceText = popup.dlg.querySelector('#chat_replace_replace').value;
+
+    if (!findText) {
+        toastr.warning('Find text cannot be empty.');
+        return;
+    }
+
+    const includeAI = popup.dlg.querySelector('#type_ai').checked;
+    const includeUser = popup.dlg.querySelector('#type_user').checked;
+    const includeSystem = popup.dlg.querySelector('#type_system').checked;
+
+    if (!includeAI && !includeUser && !includeSystem) {
+        toastr.warning('Select at least one message type.');
+        return;
+    }
+
+    function countIn(str) {
+        if (typeof str !== 'string') return 0;
+        return str.split(findText).length - 1;
+    }
+
+    const lines = [];
+    let total = 0;
+
+    for (let i = 0; i < chat.length; i++) {
+        const msg = chat[i];
+        if (msg.is_user && !includeUser) continue;
+        if (msg.is_system && !includeSystem) continue;
+        if (!msg.is_user && !msg.is_system && !includeAI) continue;
+
+        let count = 0;
+        if (Array.isArray(msg.swipes)) {
+            for (const swipe of msg.swipes) {
+                count += countIn(swipe);
+            }
+        } else {
+            count = countIn(msg.mes);
+        }
+
+        if (count > 0) {
+            lines.push(`${count} in Message #${i + 1} (${msg.name || 'Unknown'})`);
+            total += count;
+        }
+    }
+
+    if (total === 0) {
+        await Popup.show.text('Chat Replace', `No occurrences of "${findText}" found.`);
+        return;
+    }
+
+    const confirmMsg = `<b>${total}</b> occurrences of "${findText}" → "${replaceText}":\n\n${lines.map(l => `• ${l}`).join('\n')}\n\nApply these replacements?`;
+    const confirmResult = await Popup.show.confirm('Chat Replace', confirmMsg);
+    if (confirmResult !== POPUP_RESULT.AFFIRMATIVE) return;
+
+    for (let i = 0; i < chat.length; i++) {
+        const msg = chat[i];
+        if (msg.is_user && !includeUser) continue;
+        if (msg.is_system && !includeSystem) continue;
+        if (!msg.is_user && !msg.is_system && !includeAI) continue;
+
+        if (Array.isArray(msg.swipes)) {
+            for (let j = 0; j < msg.swipes.length; j++) {
+                if (typeof msg.swipes[j] === 'string') {
+                    msg.swipes[j] = msg.swipes[j].replaceAll(findText, replaceText);
+                }
+            }
+            msg.mes = msg.swipes[msg.swipe_id ?? 0];
+        } else if (typeof msg.mes === 'string') {
+            msg.mes = msg.mes.replaceAll(findText, replaceText);
+        }
+    }
+
+    await saveChatConditional();
+    await clearChat();
+    await printMessages();
 }
 
 function sanitizeFuckingText(text) {
