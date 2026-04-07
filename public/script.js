@@ -11085,6 +11085,10 @@ jQuery(async function () {
     $(document).on('click', '#replaceQuotes', function () {
         replaceQuotes();
     });
+
+    $(document).on('click', '#massReplace', function () {
+        massReplace();
+    });
 });
 
 
@@ -11103,6 +11107,7 @@ async function replaceQuotes() {
     characters[this_chid] = editedCharacter;
     await saveCurrentCharacterDataProgrammatically();
     select_selected_character(this_chid);
+    await regenerateFirstMessageIfNeeded();
 }
 
 async function deleteAsterisks() {
@@ -11123,8 +11128,192 @@ async function deleteAsterisks() {
     characters[this_chid] = editedCharacter;
     await saveCurrentCharacterDataProgrammatically();
     select_selected_character(this_chid);
+    await regenerateFirstMessageIfNeeded();
 }
 
+async function massReplace() {
+    if (this_chid === undefined) {
+        toastr.warning('No character selected.');
+        return;
+    }
+
+    const categories = [
+        { id: 'cat_description', label: 'Description' },
+        { id: 'cat_personality', label: 'Personality' },
+        { id: 'cat_scenario', label: 'Scenario' },
+        { id: 'cat_greetings', label: 'Greetings' },
+        { id: 'cat_mes_example', label: 'Msg Examples' },
+        { id: 'cat_system_prompt', label: 'System Prompt' },
+        { id: 'cat_post_history', label: 'Post-Hist Instr' },
+        { id: 'cat_creator_notes', label: 'Creator Notes' },
+    ];
+
+    const html = document.createElement('div');
+    html.innerHTML = `
+        <div style="margin-bottom:10px">
+            <label style="display:block;margin-bottom:4px"><b>Find:</b></label>
+            <input type="text" id="mass_replace_find" class="text_pole" style="width:100%;box-sizing:border-box" />
+            <label style="display:block;margin-bottom:4px;margin-top:8px"><b>Replace with:</b></label>
+            <input type="text" id="mass_replace_replace" class="text_pole" style="width:100%;box-sizing:border-box" />
+        </div>
+        <div style="margin-bottom:4px"><b>Fields to affect:</b></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px">
+            ${categories.map(c =>
+                `<label class="checkbox_label"><input type="checkbox" id="${c.id}" checked /><span>${c.label}</span></label>`
+            ).join('')}
+        </div>
+    `;
+
+    const popup = new Popup(html, POPUP_TYPE.CONFIRM, null, {
+        okButton: 'Preview',
+        cancelButton: 'Cancel',
+        wide: true,
+    });
+
+    const result = await popup.show();
+    if (result !== POPUP_RESULT.AFFIRMATIVE) return;
+
+    const findText = popup.dlg.querySelector('#mass_replace_find').value;
+    const replaceText = popup.dlg.querySelector('#mass_replace_replace').value;
+
+    if (!findText) {
+        toastr.warning('Find text cannot be empty.');
+        return;
+    }
+
+    const checkedIds = new Set(categories.filter(c => popup.dlg.querySelector(`#${c.id}`).checked).map(c => c.id));
+    if (checkedIds.size === 0) {
+        toastr.warning('Select at least one field category.');
+        return;
+    }
+
+    const char = characters[this_chid];
+
+    function countIn(str) {
+        if (typeof str !== 'string') return 0;
+        return str.split(findText).length - 1;
+    }
+
+    const lines = [];
+    let total = 0;
+
+    function scan(label, str) {
+        const n = countIn(str);
+        if (n > 0) lines.push(`${n} in ${label}`);
+        return n;
+    }
+
+    if (checkedIds.has('cat_description')) {
+        total += scan('Description', char.description);
+        total += scan('Description (V2)', char.data?.description);
+    }
+    if (checkedIds.has('cat_personality')) {
+        total += scan('Personality', char.personality);
+        total += scan('Personality (V2)', char.data?.personality);
+    }
+    if (checkedIds.has('cat_scenario')) {
+        total += scan('Scenario', char.scenario);
+        total += scan('Scenario (V2)', char.data?.scenario);
+    }
+    if (checkedIds.has('cat_greetings')) {
+        total += scan('First Message', char.first_mes);
+        total += scan('First Message (V2)', char.data?.first_mes);
+        if (Array.isArray(char.data?.alternate_greetings)) {
+            char.data.alternate_greetings.forEach((g, i) => {
+                total += scan(`Alt Greeting #${i + 1}`, g);
+            });
+        }
+    }
+    if (checkedIds.has('cat_mes_example')) {
+        total += scan('Message Examples', char.mes_example);
+        total += scan('Message Examples (V2)', char.data?.mes_example);
+    }
+    if (checkedIds.has('cat_system_prompt')) {
+        total += scan('System Prompt', char.data?.system_prompt);
+    }
+    if (checkedIds.has('cat_post_history')) {
+        total += scan('Post-History Instructions', char.data?.post_history_instructions);
+    }
+    if (checkedIds.has('cat_creator_notes')) {
+        total += scan('Creator Notes', char.data?.creator_notes);
+    }
+
+    if (total === 0) {
+        await Popup.show.text('Mass Replace', `No occurrences of "${findText}" found in the selected fields.`);
+        return;
+    }
+
+    const confirmMsg = `<b>${total}</b> occurrences of "${findText}" → "${replaceText}":\n\n${lines.map(l => `• ${l}`).join('\n')}\n\nApply these replacements?`;
+    const confirmResult = await Popup.show.confirm('Mass Replace', confirmMsg);
+    if (confirmResult !== POPUP_RESULT.AFFIRMATIVE) return;
+
+    function replaceField(obj, key) {
+        if (typeof obj?.[key] === 'string') {
+            obj[key] = obj[key].replaceAll(findText, replaceText);
+        }
+    }
+
+    const editedCharacter = characters[this_chid];
+
+    if (checkedIds.has('cat_description')) {
+        replaceField(editedCharacter, 'description');
+        replaceField(editedCharacter.data, 'description');
+    }
+    if (checkedIds.has('cat_personality')) {
+        replaceField(editedCharacter, 'personality');
+        replaceField(editedCharacter.data, 'personality');
+    }
+    if (checkedIds.has('cat_scenario')) {
+        replaceField(editedCharacter, 'scenario');
+        replaceField(editedCharacter.data, 'scenario');
+    }
+    if (checkedIds.has('cat_greetings')) {
+        replaceField(editedCharacter, 'first_mes');
+        replaceField(editedCharacter.data, 'first_mes');
+        if (Array.isArray(editedCharacter.data.alternate_greetings)) {
+            editedCharacter.data.alternate_greetings = editedCharacter.data.alternate_greetings.map(g =>
+                typeof g === 'string' ? g.replaceAll(findText, replaceText) : g
+            );
+        }
+    }
+    if (checkedIds.has('cat_mes_example')) {
+        replaceField(editedCharacter, 'mes_example');
+        replaceField(editedCharacter.data, 'mes_example');
+    }
+    if (checkedIds.has('cat_system_prompt')) {
+        replaceField(editedCharacter.data, 'system_prompt');
+    }
+    if (checkedIds.has('cat_post_history')) {
+        replaceField(editedCharacter.data, 'post_history_instructions');
+    }
+    if (checkedIds.has('cat_creator_notes')) {
+        replaceField(editedCharacter.data, 'creator_notes');
+    }
+
+    characters[this_chid] = editedCharacter;
+    await saveCurrentCharacterDataProgrammatically();
+    select_selected_character(this_chid);
+    await regenerateFirstMessageIfNeeded();
+}
+
+async function regenerateFirstMessageIfNeeded() {
+    const message = getFirstMessage();
+    const shouldRegenerate =
+        message.mes &&
+        !selected_group &&
+        !chat_metadata['tainted'] &&
+        (chat.length === 0 || (chat.length === 1 && !chat[0].is_user && !chat[0].is_system));
+
+    if (shouldRegenerate) {
+        chat.splice(0, chat.length, message);
+        const messageId = chat.length - 1;
+        await eventSource.emit(event_types.MESSAGE_RECEIVED, messageId, 'first_message');
+        await clearChat();
+        await printMessages();
+        await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId, 'first_message');
+        await saveChatConditional();
+    }
+}
 
 function sanitizeFuckingText(text) {
     const replacements = {
