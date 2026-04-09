@@ -120,17 +120,24 @@ router.post('/all', (request, response) => {
     const files = fs.readdirSync(request.user.directories.groups).filter(x => path.extname(x) === '.json');
     const chats = fs.readdirSync(request.user.directories.groupChats).filter(x => path.extname(x) === '.jsonl');
 
-    files.forEach(function (file) {
-        try {
-            const filePath = path.join(request.user.directories.groups, file);
-            const fileContents = fs.readFileSync(filePath, 'utf8');
-            const group = JSON.parse(fileContents);
-            const groupStat = fs.statSync(filePath);
-            group.date_added = groupStat.birthtimeMs;
-            group.create_date = new Date(groupStat.birthtimeMs).toISOString();
+     files.forEach(function (file) {
+         try {
+             const filePath = path.join(request.user.directories.groups, file);
+             const fileContents = fs.readFileSync(filePath, 'utf8');
+             const group = JSON.parse(fileContents);
+             const groupStat = fs.statSync(filePath);
+             const hasStoredDates = group.date_added !== undefined && group.create_date !== undefined;
+             const dateAdded = hasStoredDates ? group.date_added : groupStat.birthtimeMs;
+             const createDate = hasStoredDates ? group.create_date : new Date(groupStat.birthtimeMs).toISOString();
 
-            let chat_size = 0;
-            let date_last_chat = 0;
+             if (!hasStoredDates) {
+                 group.date_added = dateAdded;
+                 group.create_date = createDate;
+                 writeFileAtomicSync(filePath, JSON.stringify(group, null, 4));
+             }
+
+             let chat_size = 0;
+             let date_last_chat = group.date_last_chat || 0;
 
             if (Array.isArray(group.chats) && Array.isArray(chats)) {
                 for (const chat of chats) {
