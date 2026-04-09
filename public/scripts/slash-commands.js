@@ -1,5 +1,5 @@
 import { Fuse, DOMPurify } from '../lib.js';
-import { copyText, flashHighlight } from './utils.js';
+import { canUseNegativeLookbehind, copyText, findPersona, flashHighlight, getBase64Async, ensureImageFormatSupported, supportedImageMimeTypes, isExternalUrl } from './utils.js';
 
 import {
     Generate,
@@ -7,10 +7,12 @@ import {
     addOneMessage,
     characters,
     chat,
+    chatElement,
     chat_metadata,
     comment_avatar,
     deactivateSendButtons,
     default_avatar,
+    deleteCharacter,
     deleteSwipe,
     displayPastChats,
     duplicateCharacter,
@@ -21,9 +23,12 @@ import {
     extractMessageBias,
     generateQuietPrompt,
     generateRaw,
+    getCharacters,
     getCurrentChatDetails,
     getCurrentChatId,
     getFirstDisplayedMessageId,
+    getOneCharacter,
+    getRequestHeaders,
     getThumbnailUrl,
     is_send_press,
     main_api,
@@ -39,6 +44,8 @@ import {
     saveChatConditional,
     saveSettings,
     saveSettingsDebounced,
+    selectCharacterById,
+    select_selected_character,
     sendMessageAsUser,
     sendSystemMessage,
     setActiveCharacter,
@@ -47,12 +54,14 @@ import {
     setCharacterName,
     setExtensionPrompt,
     showMoreMessages,
+    swipe,
     stopGeneration,
     substituteParams,
     syncMesToSwipe,
     system_avatar,
     system_message_types,
     this_chid,
+    updateMessageElement,
 } from '../script.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommandParserError } from './slash-commands/SlashCommandParserError.js';
@@ -60,14 +69,15 @@ import { getMessageTimeStamp, isMobile } from './RossAscends-mods.js';
 import { hideChatMessageRange } from './chats.js';
 import { getContext, saveMetadataDebounced } from './extensions.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
-import { findGroupMemberId, groups, is_group_generating, openGroupById, resetSelectedGroup, saveGroupChat, selected_group, getGroupMembers } from './group-chats.js';
-import { chat_completion_sources, oai_settings, promptManager } from './openai.js';
+import { findGroupMemberId, groups, is_group_generating, openGroupById, regenerateGroup, resetSelectedGroup, saveGroupChat, selected_group, getGroupMembers } from './group-chats.js';
+import { chat_completion_sources, oai_settings, promptManager, SILICONFLOW_ENDPOINT, ZAI_ENDPOINT } from './openai.js';
 import { user_avatar } from './personas.js';
-import { addEphemeralStoppingString, chat_styles, context_presets, flushEphemeralStoppingStrings, power_user } from './power-user.js';
+import { addEphemeralStoppingString, chat_styles, context_presets, flushEphemeralStoppingStrings, playMessageSound, power_user } from './power-user.js';
 import { SERVER_INPUTS, textgen_types, textgenerationwebui_settings } from './textgen-settings.js';
 import { decodeTextTokens, getAvailableTokenizers, getFriendlyTokenizerName, getTextTokens, getTokenCountAsync, selectTokenizer } from './tokenizers.js';
 import { debounce, delay, equalsIgnoreCaseAndAccents, findChar, getCharIndex, isFalseBoolean, isTrueBoolean, onlyUnique, regexFromString, showFontAwesomePicker, stringToRange, trimToEndSentence, trimToStartSentence, waitUntilCondition } from './utils.js';
 import { registerVariableCommands, resolveVariable } from './variables.js';
+import { registerActionLoaderSlashCommands } from './action-loader-slashcommands.js';
 import { background_settings } from './backgrounds.js';
 import { SlashCommandClosure } from './slash-commands/SlashCommandClosure.js';
 import { SlashCommandClosureResult } from './slash-commands/SlashCommandClosureResult.js';
@@ -88,7 +98,7 @@ import { SlashCommandScope } from './slash-commands/SlashCommandScope.js';
 import { t } from './i18n.js';
 import { kai_settings } from './kai-settings.js';
 import { instruct_presets, selectContextPreset, selectInstructPreset } from './instruct-mode.js';
-import { debounce_timeout } from './constants.js';
+import { debounce_timeout, SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
 export {
     executeSlashCommands, executeSlashCommandsWithOptions, getSlashCommandsHelp, registerSlashCommand,
 };
@@ -227,11 +237,6 @@ export function initDefaultSlashCommands() {
     }
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'dupe',
-        callback: duplicateCharacter,
-        helpString: 'Duplicates the currently selected character.',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'api',
         callback: async function (args, text) {
             if (!text?.toString()?.trim()) {
@@ -306,11 +311,11 @@ export function initDefaultSlashCommands() {
             toastr.clear(toast);
             return text?.toString()?.trim() ?? '';
         },
-        returns: 'the current API',
+        returns: t`the current API`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'quiet',
-                description: 'Suppress the toast message on connection',
+                description: t`Suppress the toast message on connection`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 enumList: commonEnumProviders.boolean('trueFalse')(),
@@ -318,7 +323,7 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'API to connect to',
+                description: t`API to connect to`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumList: Object.entries(CONNECT_API_MAP).sort(([a], [b]) => a.localeCompare(b)).map(([api, { selected }]) =>
                     new SlashCommandEnumValue(api, selected, enumTypes.getBasedOnIndex(UNIQUE_APIS.findIndex(x => x === selected)),
@@ -327,10 +332,10 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
             <div>
-                Connect to an API. If no argument is provided, it will return the currently connected API.
+                ${t`Connect to an API. If no argument is provided, it will return the currently connected API.`}
             </div>
             <div>
-                <strong>Available APIs:</strong>
+                <strong>${t`Available APIs:`}</strong>
                 <pre><code>${Object.keys(CONNECT_API_MAP).sort((a, b) => a.localeCompare(b)).join(', ')}</code></pre>
             </div>
         `,
@@ -367,7 +372,7 @@ export function initDefaultSlashCommands() {
         namedArgumentList: [
             new SlashCommandNamedArgument(
                 'await',
-                'Whether to await for the triggered generation before continuing',
+                t`Whether to await for the triggered generation before continuing`,
                 [ARGUMENT_TYPE.BOOLEAN],
                 false,
                 false,
@@ -381,13 +386,13 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
             <div>
-                Calls an impersonation response, with an optional additional prompt.
+                ${t`Calls an impersonation response, with an optional additional prompt.`}
             </div>
             <div>
-                If <code>await=true</code> named argument is passed, the command will wait for the impersonation to end before continuing.
+                ${t`If <code>await=true</code> named argument is passed, the command will wait for the impersonation to end before continuing.`}
             </div>
             <div>
-                <strong>Example:</strong>
+                <strong>${t`Example:`}</strong>
                 <ul>
                     <li>
                         <pre><code class="language-stscript">/impersonate What is the meaning of life?</code></pre>
@@ -426,7 +431,7 @@ export function initDefaultSlashCommands() {
                 $(currentChatDeleteButton).trigger('click', { fromSlashCommand: true });
             }));
         },
-        helpString: 'Deletes the current chat.',
+        helpString: t`Deletes the current chat.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'renamechat',
@@ -449,18 +454,18 @@ export function initDefaultSlashCommands() {
         },
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'new chat name', [ARGUMENT_TYPE.STRING], true,
+                t`new chat name`, [ARGUMENT_TYPE.STRING], true,
             ),
         ],
-        helpString: 'Renames the current chat.',
+        helpString: t`Renames the current chat.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'getchatname',
         callback: async function doGetChatName() {
             return getCurrentChatDetails().sessionName;
         },
-        returns: 'chat file name',
-        helpString: 'Returns the name of the current chat file into the pipe.',
+        returns: t`chat file name`,
+        helpString: t`Returns the name of the current chat file into the pipe.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'closechat',
@@ -468,7 +473,7 @@ export function initDefaultSlashCommands() {
             $('#option_close_chat').trigger('click');
             return '';
         },
-        helpString: 'Closes the current chat.',
+        helpString: t`Closes the current chat.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'tempchat',
@@ -476,7 +481,7 @@ export function initDefaultSlashCommands() {
             return new Promise((resolve, reject) => {
                 const eventCallback = async (chatId) => {
                     if (chatId) {
-                        return reject('Not in a temporary chat');
+                        return reject(t`Not in a temporary chat`);
                     }
                     await newAssistantChat({ temporary: true });
                     return resolve('');
@@ -484,12 +489,12 @@ export function initDefaultSlashCommands() {
                 eventSource.once(event_types.CHAT_CHANGED, eventCallback);
                 $('#option_close_chat').trigger('click');
                 setTimeout(() => {
-                    reject('Failed to open temporary chat');
+                    reject(t`Failed to open temporary chat`);
                     eventSource.removeListener(event_types.CHAT_CHANGED, eventCallback);
                 }, debounce_timeout.relaxed);
             });
         },
-        helpString: 'Opens a temporary chat with Assistant.',
+        helpString: t`Opens a temporary chat with Assistant.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'panels',
@@ -498,17 +503,17 @@ export function initDefaultSlashCommands() {
             return '';
         },
         aliases: ['togglepanels'],
-        helpString: 'Toggle UI panels on/off',
+        helpString: t`Toggle UI panels on/off`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'forcesave',
         callback: async function () {
             await saveSettings();
             await saveChatConditional();
-            toastr.success('Chat and settings saved.');
+            toastr.success(t`Chat and settings saved.`);
             return '';
         },
-        helpString: 'Forces a save of the current chat and settings',
+        helpString: t`Forces a save of the current chat and settings`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'instruct',
@@ -531,18 +536,18 @@ export function initDefaultSlashCommands() {
             selectInstructPreset(foundName, { quiet: quiet });
             return foundName;
         },
-        returns: 'current template',
+        returns: t`current template`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'quiet',
-                description: 'Suppress the toast message on template change',
+                description: t`Suppress the toast message on template change`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 enumList: commonEnumProviders.boolean('trueFalse')(),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'forceGet',
-                description: 'Force getting a name even if instruct mode is disabled',
+                description: t`Force getting a name even if instruct mode is disabled`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 enumList: commonEnumProviders.boolean('trueFalse')(),
@@ -550,18 +555,18 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'instruct template name',
+                description: t`instruct template name`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumProvider: () => instruct_presets.map(preset => new SlashCommandEnumValue(preset.name, null, enumTypes.enum, enumIcons.preset)),
             }),
         ],
         helpString: `
             <div>
-                Selects instruct mode template by name. Enables instruct mode if not already enabled.
-                Gets the current instruct template if no name is provided and instruct mode is enabled or <code>forceGet=true</code> is passed.
+                ${t`Selects instruct mode template by name. Enables instruct mode if not already enabled.`}
+                ${t`Gets the current instruct template if no name is provided and instruct mode is enabled or <code>forceGet=true</code> is passed.`}
             </div>
             <div>
-                <strong>Example:</strong>
+                <strong>${t`Example:`}</strong>
                 <ul>
                     <li>
                         <pre><code class="language-stscript">/instruct creative</code></pre>
@@ -573,20 +578,20 @@ export function initDefaultSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'instruct-on',
         callback: enableInstructCallback,
-        helpString: 'Enables instruct mode.',
+        helpString: t`Enables instruct mode.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'instruct-off',
         callback: disableInstructCallback,
-        helpString: 'Disables instruct mode',
+        helpString: t`Disables instruct mode`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'instruct-state',
         aliases: ['instruct-toggle'],
-        helpString: 'Gets the current instruct mode state. If an argument is provided, it will set the instruct mode state.',
+        helpString: t`Gets the current instruct mode state. If an argument is provided, it will set the instruct mode state.`,
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'instruct mode state',
+                description: t`instruct mode state`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 enumList: commonEnumProviders.boolean('trueFalse')(),
             }),
@@ -622,11 +627,11 @@ export function initDefaultSlashCommands() {
             selectContextPreset(foundName, { quiet: quiet });
             return foundName;
         },
-        returns: 'template name',
+        returns: t`template name`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'quiet',
-                description: 'Suppress the toast message on template change',
+                description: t`Suppress the toast message on template change`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 enumList: commonEnumProviders.boolean('trueFalse')(),
@@ -634,12 +639,12 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'context template name',
+                description: t`context template name`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumProvider: () => context_presets.map(preset => new SlashCommandEnumValue(preset.name, null, enumTypes.enum, enumIcons.preset)),
             }),
         ],
-        helpString: 'Selects context template by name. Gets the current template if no name is provided',
+        helpString: t`Selects context template by name. Gets the current template if no name is provided`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'chat-manager',
@@ -648,47 +653,45 @@ export function initDefaultSlashCommands() {
             return '';
         },
         aliases: ['chat-history', 'manage-chats'],
-        helpString: 'Opens the chat manager for the current character/group.',
+        helpString: t`Opens the chat manager for the current character/group.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: '?',
         callback: helpCommandCallback,
         aliases: ['help'],
         unnamedArgumentList: [SlashCommandArgument.fromProps({
-            description: 'help topic',
+            description: t`help topic`,
             typeList: [ARGUMENT_TYPE.STRING],
             enumList: [
-                new SlashCommandEnumValue('slash', 'slash commands (STscript)', enumTypes.command, '/'),
-                new SlashCommandEnumValue('macros', '{{macros}} (text replacement)', enumTypes.macro, enumIcons.macro),
-                new SlashCommandEnumValue('format', 'chat/text formatting', enumTypes.name, '★'),
-                new SlashCommandEnumValue('hotkeys', 'keyboard shortcuts', enumTypes.enum, '⏎'),
+                new SlashCommandEnumValue('slash', t`slash commands (STscript)`, enumTypes.command, '/'),
+                new SlashCommandEnumValue('macros', t`{{macros}} (text replacement)`, enumTypes.macro, enumIcons.macro),
+                new SlashCommandEnumValue('format', t`chat/text formatting`, enumTypes.name, '★'),
+                new SlashCommandEnumValue('hotkeys', t`keyboard shortcuts`, enumTypes.enum, '⏎'),
             ],
         })],
-        helpString: 'Get help on macros, chat formatting and commands.',
+        helpString: t`Get help on macros, chat formatting and commands.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'bg',
         callback: setBackgroundCallback,
         aliases: ['background'],
-        returns: 'the current background',
+        returns: t`the current background`,
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'background filename',
+                description: t`background filename`,
                 typeList: [ARGUMENT_TYPE.STRING],
-                enumProvider: () => [...document.querySelectorAll('.bg_example')]
-                    .map(it => new SlashCommandEnumValue(it.getAttribute('bgfile')))
-                    .filter(it => it.value?.length),
+                enumProvider: commonEnumProviders.backgrounds,
             }),
         ],
         helpString: `
         <div>
-            Sets a background according to the provided filename. Partial names allowed.
+            ${t`Sets a background according to the provided filename. Partial names allowed.`}
         </div>
         <div>
-            If no background is provided, this will return the currently selected background.
+            ${t`If no background is provided, this will return the currently selected background.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/bg beach.jpg</code></pre>
@@ -704,31 +707,31 @@ export function initDefaultSlashCommands() {
         name: 'char-find',
         aliases: ['findchar'],
         callback: (args, name) => {
-            if (typeof name !== 'string') throw new Error('name must be a string');
-            if (args.preferCurrent instanceof SlashCommandClosure || Array.isArray(args.preferCurrent)) throw new Error('preferCurrent cannot be a closure or array');
-            if (args.quiet instanceof SlashCommandClosure || Array.isArray(args.quiet)) throw new Error('quiet cannot be a closure or array');
+            if (typeof name !== 'string') throw new Error(t`name must be a string`);
+            if (args.preferCurrent instanceof SlashCommandClosure || Array.isArray(args.preferCurrent)) throw new Error(t`preferCurrent cannot be a closure or array`);
+            if (args.quiet instanceof SlashCommandClosure || Array.isArray(args.quiet)) throw new Error(t`quiet cannot be a closure or array`);
 
             const char = findChar({ name: name, filteredByTags: validateArrayArgString(args.tag, 'tag'), preferCurrentChar: !isFalseBoolean(args.preferCurrent), quiet: isTrueBoolean(args.quiet) });
             return char?.avatar ?? '';
         },
-        returns: 'the avatar key (unique identifier) of the character',
+        returns: t`the avatar key (unique identifier) of the character`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'tag',
-                description: 'Supply one or more tags to filter down to the correct character for the provided name, if multiple characters have the same name.',
+                description: t`Supply one or more tags to filter down to the correct character for the provided name, if multiple characters have the same name.`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumProvider: commonEnumProviders.tags('assigned'),
                 acceptsMultiple: true,
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'preferCurrent',
-                description: 'Prefer current character or characters in a group, if multiple characters match',
+                description: t`Prefer current character or characters in a group, if multiple characters match`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'true',
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'quiet',
-                description: 'Do not show warning if multiple charactrers are found',
+                description: t`Do not show warning if multiple charactrers are found`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 enumProvider: commonEnumProviders.boolean('trueFalse'),
@@ -736,70 +739,568 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'Character name - or unique character identifier (avatar key)',
+                description: t`Character name - or unique character identifier (avatar key)`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumProvider: commonEnumProviders.characters('character'),
             }),
         ],
         helpString: `
         <div>
-            Searches for a character and returns its avatar key.
+            ${t`Searches for a character and returns its avatar key.`}
         </div>
         <div>
-            This can be used to choose the correct character for something like <code>/sendas</code> or other commands in need of a character name
-            if you have multiple characters with the same name.
+            ${t`This can be used to choose the correct character for something like <code>/sendas</code> or other commands in need of a character name if you have multiple characters with the same name.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/char-find name="Chloe"</code></pre>
-                    Returns the avatar key for "Chloe".
+                    ${t`Returns the avatar key for "Chloe".`}
                 </li>
                 <li>
                     <pre><code>/search name="Chloe" tag="friend"</code></pre>
-                    Returns the avatar key for the character "Chloe" that is tagged with "friend".
-                    This is useful if you for example have multiple characters named "Chloe", and the others are "foe", "goddess", or anything else,
-                    so you can actually select the character you are looking for.
+                    ${t`Returns the avatar key for the character "Chloe" that is tagged with "friend".`}
+                    ${t`This is useful if you for example have multiple characters named "Chloe", and the others are "foe", "goddess", or anything else, so you can actually select the character you are looking for.`}
+                </li>
+            </ul>
+        </div>
+        `,
+    }));
+
+    /**
+     * Provides autocomplete matching for folder names.
+     * Matches if the input starts with the check or vice versa (case-insensitive).
+     * @param {string} input - The input string to match against
+     * @param {string} check - The check string to match with
+     * @param {object} [options={}] - Options
+     * @param {boolean} [options.trueOnEmpty=true] - Whether to return true when input is empty
+     * @returns {boolean} - True if the strings match according to the folder matching rules
+     */
+    function folderEnumMatchProvider(input, check, { trueOnEmpty = true } = {}) {
+        if (!check) return false;
+        if (!input) return trueOnEmpty;
+        const inputLower = input.toLowerCase();
+        const checkLower = check.toLowerCase();
+        return inputLower.startsWith(checkLower) || checkLower.startsWith(inputLower);
+    }
+
+    // Shared character field definitions for char CRUD commands
+    const getCharacterFieldArgs = ({ requiredFields = [] } = {}) => [
+        SlashCommandNamedArgument.fromProps({
+            name: 'name',
+            description: t`The name of the character`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('name'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'description',
+            description: t`The character's description/personality definition`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('description'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'firstMessage',
+            description: t`The character's first message/greeting`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('firstMessage'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'personality',
+            description: t`A brief description of the personality`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('personality'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'scenario',
+            description: t`The scenario or circumstances for the conversation`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('scenario'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'messageExamples',
+            description: t`Example messages for the character`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('messageExamples'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'creatorNotes',
+            description: t`Notes from the character creator`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('creatorNotes'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'systemPrompt',
+            description: t`The character's system prompt`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('systemPrompt'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'postHistoryInstructions',
+            description: t`Post-history instructions (jailbreak)`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('postHistoryInstructions'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'creator',
+            description: t`The creator of the character`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('creator'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'characterVersion',
+            description: t`The version of the character`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('characterVersion'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'tags',
+            description: t`Comma-separated list of character card tags (embedded in the card, not ST's folder/filter tags). Use /tag-add for ST tags or /tag-import to import card tags as ST tags.`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('tags'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'favorite',
+            description: t`Whether this character is a favorite`,
+            typeList: [ARGUMENT_TYPE.BOOLEAN],
+            enumProvider: commonEnumProviders.boolean('trueFalse'),
+            isRequired: requiredFields.includes('favorite'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'avatar',
+            description: t`Avatar image. Use "prompt" to open file picker, or provide a local ST file path (e.g., characters/Name.png, backgrounds/image.png). This can also be the return value from the /imagine command. External URLs are not supported.`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('avatar'),
+            enumList: [
+                new SlashCommandEnumValue('prompt', 'Open file picker to select an image', 'enum', '📁'),
+                new SlashCommandEnumValue('characters/...', 'Character avatars path (e.g., characters/Name.png)', 'enum', '📄', (input) => folderEnumMatchProvider(input, 'characters/'), () => 'characters/'),
+                new SlashCommandEnumValue('backgrounds/...', 'Background image path', 'enum', '📄', (input) => folderEnumMatchProvider(input, 'backgrounds/'), () => 'backgrounds/'),
+                new SlashCommandEnumValue('User Avatars/...', 'User avatar path', 'enum', '📄', (input) => folderEnumMatchProvider(input, 'User Avatars/'), () => 'User Avatars/'),
+                new SlashCommandEnumValue('assets/...', 'Asset file path', 'enum', '📄', (input) => folderEnumMatchProvider(input, 'assets/'), () => 'assets/'),
+                new SlashCommandEnumValue('user/images/...', 'User image path', 'enum', '📄', (input) => folderEnumMatchProvider(input, 'user/images/'), () => 'user/images/'),
+            ],
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'avatarPromptResize',
+            description: t`Whether to show the avatar resize/crop dialog when uploading (default: true). Ignored if "Never resize avatars" is enabled in settings.`,
+            typeList: [ARGUMENT_TYPE.BOOLEAN],
+            defaultValue: 'true',
+            enumProvider: commonEnumProviders.boolean('trueFalse'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'talkativeness',
+            description: t`How often the character speaks in group chats (0.0 to 1.0)`,
+            typeList: [ARGUMENT_TYPE.NUMBER],
+            isRequired: requiredFields.includes('talkativeness'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'world',
+            description: t`The name of the lorebook to attach`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            enumProvider: commonEnumProviders.worlds,
+            isRequired: requiredFields.includes('world'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'depthPrompt',
+            description: t`Character-specific depth prompt content`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            isRequired: requiredFields.includes('depthPrompt'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'depthPromptDepth',
+            description: t`Depth for the character-specific depth prompt`,
+            typeList: [ARGUMENT_TYPE.NUMBER],
+            isRequired: requiredFields.includes('depthPromptDepth'),
+        }),
+        SlashCommandNamedArgument.fromProps({
+            name: 'depthPromptRole',
+            description: t`Role for the depth prompt`,
+            typeList: [ARGUMENT_TYPE.STRING],
+            enumList: commonEnumProviders.messageRoles(),
+            isRequired: requiredFields.includes('depthPromptRole'),
+        }),
+    ];
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'char-create',
+        callback: createCharacterCallback,
+        returns: t`the avatar key (unique identifier) of the created character`,
+        namedArgumentList: [
+            ...getCharacterFieldArgs({ requiredFields: ['name'] }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'select',
+                description: t`Whether to select/open the character after creation (default: true)`,
+                typeList: [ARGUMENT_TYPE.BOOLEAN],
+                defaultValue: 'true',
+                enumProvider: commonEnumProviders.boolean('trueFalse'),
+            }),
+        ],
+        helpString: `
+        <div>
+            ${t`Creates a new character with the specified attributes. Returns the avatar key of the created character.`}
+        </div>
+        <div>
+            <strong>${t`Required arguments:`}</strong>
+            <ul>
+                <li><code>name</code> - ${t`The character's name`}</li>
+            </ul>
+        </div>
+        <div>
+            <strong>${t`Note on tags:`}</strong> ${t`The <code>tags</code> argument sets character card tags (embedded in the character file), not SillyTavern's folder/filter tags. To add ST tags after creation, use <code>/tag-add</code>. To import card tags as ST tags, use <code>/tag-import</code>.`}
+        </div>
+        <div>
+            <strong>${t`Note on avatar:`}</strong> ${t`The <code>avatar</code> argument accepts <code>prompt</code> to open a file picker, or a local ST file path. Supported paths include: <code>characters/Name.png</code>, <code>backgrounds/image.png</code>, <code>User Avatars/avatar.png</code>, <code>assets/category/file.png</code>. This can also be the return value from the /imagine command. External URLs are not supported.`}
+        </div>
+        <div>
+            <strong>${t`Example:`}</strong>
+            <ul>
+                <li>
+                    <pre><code>/char-create name="Alice" description="A friendly AI assistant" firstMessage="Hello! How can I help you today?"</code></pre>
+                </li>
+                <li>
+                    <pre><code>/char-create name="Bob" description="A wise wizard" firstMessage="Greetings, traveler." personality="Wise, patient" scenario="A magical library" favorite=true</code></pre>
+                </li>
+                <li>
+                    <pre><code>/char-create name="Clone" description="A clone" firstMessage="Hi!" avatar=prompt</code></pre>
+                    <span>${t`(opens file picker for avatar)`}</span>
                 </li>
             </ul>
         </div>
         `,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'char-update',
+        callback: updateCharacterCallback,
+        returns: t`the avatar key of the updated character`,
+        namedArgumentList: [
+            SlashCommandNamedArgument.fromProps({
+                name: 'char',
+                description: t`Character name or avatar key. If not provided, uses the currently selected character.`,
+                typeList: [ARGUMENT_TYPE.STRING],
+                enumProvider: commonEnumProviders.characters('character'),
+            }),
+            ...getCharacterFieldArgs(),
+        ],
+        helpString: `
+        <div>
+            ${t`Updates an existing character's attributes. The character does not need to be currently selected.`}
+        </div>
+        <div>
+            ${t`If no <code>char</code> argument is provided, updates the currently selected character.`}
+        </div>
+        <div>
+            <strong>${t`Note on tags:`}</strong> ${t`The <code>tags</code> argument sets character card tags (embedded in the PNG), not SillyTavern's folder/filter tags. To add ST tags, use <code>/tag-add</code>. To import card tags as ST tags, use <code>/tag-import</code>.`}
+        </div>
+        <div>
+            <strong>${t`Note on avatar:`}</strong> ${t`The <code>avatar</code> argument accepts <code>prompt</code> to open a file picker, or a local ST file path. Supported paths: <code>characters/Name.png</code>, <code>backgrounds/image.png</code>, <code>User Avatars/avatar.png</code>, <code>assets/category/file.png</code>. This can also be the return value from the /imagine command. External URLs are not supported.`}
+        </div>
+        <div>
+            <strong>${t`Example:`}</strong>
+            <ul>
+                <li>
+                    <pre><code>/char-update description="An updated description for this character"</code></pre>
+                    ${t`Updates the currently selected character's description.`}
+                </li>
+                <li>
+                    <pre><code>/char-update char="Alice" personality="Cheerful and energetic" favorite=true</code></pre>
+                    ${t`Updates Alice's personality and marks her as a favorite.`}
+                </li>
+                <li>
+                    <pre><code>/imagine you | /char-update avatar="{{pipe}}"</code></pre>
+                    ${t`Generates an image and sets it as the current character's avatar.`}
+                </li>
+            </ul>
+        </div>
+        `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'char-duplicate',
+        aliases: ['dupe'],
+        callback: duplicateCharacterCallback,
+        returns: t`the avatar key (unique identifier) of the duplicated character`,
+        namedArgumentList: [
+            SlashCommandNamedArgument.fromProps({
+                name: 'char',
+                description: t`Character name or avatar key to duplicate. If not provided, uses the currently selected character.`,
+                typeList: [ARGUMENT_TYPE.STRING],
+                enumProvider: commonEnumProviders.characters('character'),
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'select',
+                description: t`Whether to select/open the duplicated character after creation (default: false)`,
+                typeList: [ARGUMENT_TYPE.BOOLEAN],
+                defaultValue: 'false',
+                enumProvider: commonEnumProviders.boolean('trueFalse'),
+            }),
+        ],
+        helpString: `
+        <div>
+            ${t`Duplicates a character. Returns the avatar key of the duplicated character.`}
+        </div>
+        <div>
+            ${t`Use <code>/char-update</code> afterwards to modify the duplicated character's fields.`}
+        </div>
+        <div>
+            <strong>${t`Example:`}</strong>
+            <ul>
+                <li>
+                    <pre><code>/char-duplicate</code></pre>
+                    ${t`Duplicates the currently selected character.`}
+                </li>
+                <li>
+                    <pre><code>/char-duplicate char="Alice" select=true</code></pre>
+                    ${t`Duplicates Alice and selects the new character.`}
+                </li>
+                <li>
+                    <pre><code>/char-duplicate | /setvar key=newChar | /char-update char="{{getvar::newChar}}" name="Clone"</code></pre>
+                    ${t`Duplicates the current character and renames the clone.`}
+                </li>
+            </ul>
+        </div>
+        `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'char-get',
+        aliases: ['char-data'],
+        callback: getCharacterDataCallback,
+        returns: t`character data as JSON or a specific field value`,
+        namedArgumentList: [
+            SlashCommandNamedArgument.fromProps({
+                name: 'char',
+                description: t`Character name or avatar key. If not provided, uses the currently selected character.`,
+                typeList: [ARGUMENT_TYPE.STRING],
+                enumProvider: commonEnumProviders.characters('character'),
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'field',
+                description: t`Specific field to retrieve. If not provided, returns the entire character data.`,
+                typeList: [ARGUMENT_TYPE.STRING],
+                enumList: [
+                    new SlashCommandEnumValue('name', t`Character name`, enumTypes.enum),
+                    new SlashCommandEnumValue('description', t`Character description`, enumTypes.enum),
+                    new SlashCommandEnumValue('personality', t`Character personality`, enumTypes.enum),
+                    new SlashCommandEnumValue('scenario', t`Character scenario`, enumTypes.enum),
+                    new SlashCommandEnumValue('first_mes', t`First message`, enumTypes.enum),
+                    new SlashCommandEnumValue('mes_example', t`Message examples`, enumTypes.enum),
+                    new SlashCommandEnumValue('creator_notes', t`Creator notes`, enumTypes.enum),
+                    new SlashCommandEnumValue('system_prompt', t`System prompt`, enumTypes.enum),
+                    new SlashCommandEnumValue('post_history_instructions', t`Post-history instructions`, enumTypes.enum),
+                    new SlashCommandEnumValue('creator', t`Creator name`, enumTypes.enum),
+                    new SlashCommandEnumValue('character_version', t`Character version`, enumTypes.enum),
+                    new SlashCommandEnumValue('tags', t`Character tags`, enumTypes.enum),
+                    new SlashCommandEnumValue('talkativeness', t`Talkativeness`, enumTypes.enum),
+                    new SlashCommandEnumValue('avatar', t`Avatar filename`, enumTypes.enum),
+                    new SlashCommandEnumValue('fav', t`Favorite status`, enumTypes.enum),
+                ],
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'return',
+                description: t`The way to return the result`,
+                typeList: [ARGUMENT_TYPE.STRING],
+                defaultValue: 'pipe',
+                enumList: slashCommandReturnHelper.enumList({ allowPipe: true, allowObject: true, allowChat: false, allowPopup: true, allowTextVersion: false }),
+            }),
+        ],
+        helpString: `
+        <div>
+            ${t`Retrieves character data. Can get all data or a specific field.`}
+        </div>
+        <div>
+            <strong>${t`Example:`}</strong>
+            <ul>
+                <li>
+                    <pre><code>/char-get field=description | /echo</code></pre>
+                    ${t`Outputs the current character's description.`}
+                </li>
+                <li>
+                    <pre><code>/char-get char="Alice" field=personality</code></pre>
+                    ${t`Returns Alice's personality field.`}
+                </li>
+                <li>
+                    <pre><code>/char-get char="Bob" return=object</code></pre>
+                    ${t`Returns Bob's entire character data as an object.`}
+                </li>
+            </ul>
+        </div>
+        `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'char-delete',
+        callback: deleteCharacterCallback,
+        returns: t`true if the character was deleted, false otherwise`,
+        namedArgumentList: [
+            SlashCommandNamedArgument.fromProps({
+                name: 'char',
+                description: t`Character name or avatar key. If not provided, uses the currently selected character.`,
+                typeList: [ARGUMENT_TYPE.STRING],
+                enumProvider: commonEnumProviders.characters('character'),
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'deleteChats',
+                description: t`Whether to also delete all chats with this character`,
+                typeList: [ARGUMENT_TYPE.BOOLEAN],
+                defaultValue: 'false',
+                enumProvider: commonEnumProviders.boolean('trueFalse'),
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'silent',
+                description: t`Skip the confirmation popup`,
+                typeList: [ARGUMENT_TYPE.BOOLEAN],
+                defaultValue: 'false',
+                enumProvider: commonEnumProviders.boolean('trueFalse'),
+            }),
+        ],
+        helpString: `
+        <div>
+            ${t`Deletes a character from the system.`}
+        </div>
+        <div>
+            ${t`If no <code>char</code> argument is provided, deletes the currently selected character.`}
+        </div>
+        <div>
+            <strong>${t`Warning:`}</strong> ${t`This action is irreversible!`}
+        </div>
+        <div>
+            <strong>${t`Example:`}</strong>
+            <ul>
+                <li>
+                    <pre><code>/char-delete</code></pre>
+                    ${t`Deletes the currently selected character (will show confirmation popup).`}
+                </li>
+                <li>
+                    <pre><code>/char-delete char="Bob" deleteChats=true silent=true</code></pre>
+                    ${t`Deletes Bob and all associated chats without confirmation.`}
+                </li>
+            </ul>
+        </div>
+        `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'message-role',
+        callback: messageRoleCallback,
+        returns: 'The role of the message sender',
+        namedArgumentList: [
+            SlashCommandNamedArgument.fromProps({
+                name: 'at',
+                description: 'the ID of the message to modify (index-based, corresponding to message id). If omitted, the last message is chosen.\nNegative values are accepted and will work similarly to how \'depth\' usually works. For example, -1 will modify the message right before the last message in chat. At must be nonzero.',
+                typeList: [ARGUMENT_TYPE.NUMBER],
+                defaultValue: '',
+                enumProvider: commonEnumProviders.messages({ allowIdAfter: true }),
+            }),
+        ],
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: 'Role to set for the message sender (user, assistant, system)',
+                typeList: [ARGUMENT_TYPE.STRING],
+                isRequired: false,
+                enumProvider: commonEnumProviders.messageRoles,
+            }),
+        ],
+        helpString: `
+        <div>
+            Changes the role of a message sender to one of your choice.
+            If no role is provided, just gets the current role of the message sender.
+            If no index is provided, the last message is chosen.
+        </div>
+        <div>
+            <strong>Example:</strong>
+            <ul>
+                <li>
+                    <pre><code>/message-role | /echo</code></pre>
+                    Will output the role of the sender of the last message.
+                </li>
+                <li>
+                    <pre><code>/message-role at=-2 assistant</code></pre>
+                    Will change the third message from the bottom to be sent by the assistant.
+                </li>
+            </ul>
+        </div>
+    `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'message-name',
+        callback: messageNameCallback,
+        returns: 'The name of the message sender',
+        namedArgumentList: [
+            SlashCommandNamedArgument.fromProps({
+                name: 'at',
+                description: 'the ID of the message to modify (index-based, corresponding to message id). If omitted, the last message is chosen.\nNegative values are accepted and will work similarly to how \'depth\' usually works. For example, -1 will modify the message right before the last message in chat. At must be nonzero.',
+                typeList: [ARGUMENT_TYPE.NUMBER],
+                defaultValue: '',
+                enumProvider: commonEnumProviders.messages({ allowIdAfter: true }),
+            }),
+        ],
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: 'Persona name, character name, or unique character identifier (avatar key)',
+                typeList: [ARGUMENT_TYPE.STRING],
+                isRequired: false,
+                enumProvider: (executor) => {
+                    let modifyAt = Number(executor.namedArgumentList.find(arg => arg.name === 'at')?.value ?? (chat.length - 1));
+                    if (!isNaN(modifyAt) && (modifyAt < 0 || Object.is(modifyAt, -0))) {
+                        modifyAt = chat.length + modifyAt;
+                    }
+                    return chat[modifyAt]?.is_user
+                        ? commonEnumProviders.personas()
+                        : commonEnumProviders.characters('character')();
+                },
+            }),
+        ],
+        helpString: `
+        <div>
+            Changes the name of a message sender to one of your choice.
+            If no name is provided, just gets the current name of the message sender.
+            If no index is provided, the last message is chosen.
+        </div>
+        <div>
+            <strong>Example:</strong>
+            <ul>
+                <li>
+                    <pre><code>/message-name | /echo</code></pre>
+                    Will output the name of the sender of the last message.
+                </li>
+                <li>
+                    <pre><code>/message-name at=-2 "Chloe"</code></pre>
+                    Will change the third message from the bottom to be sent by "Chloe".
+                </li>
+            </ul>
+        </div>
+    `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'sendas',
         rawQuotes: true,
         callback: sendMessageAs,
-        returns: 'Optionally the text of the sent message, if specified in the "return" argument',
+        returns: t`Optionally the text of the sent message, if specified in the "return" argument`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'name',
-                description: 'Character name - or unique character identifier (avatar key)',
+                description: t`Character name - or unique character identifier (avatar key)`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumProvider: commonEnumProviders.characters('character'),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'avatar',
-                description: 'Character avatar override (Can be either avatar key or just the character name to pull the avatar from)',
+                description: t`Character avatar override (Can be either avatar key or just the character name to pull the avatar from)`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumProvider: commonEnumProviders.characters('character'),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'compact',
-                description: 'Use compact layout',
+                description: t`Use compact layout`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'at',
-                description: 'position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
+                description: t`position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how 'depth' usually works. For example, -1 will insert the message right before the last message in chat.`,
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 enumProvider: commonEnumProviders.messages({ allowIdAfter: true }),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'return',
-                description: 'The way how you want the return value to be provided',
+                description: t`The way how you want the return value to be provided`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'none',
                 enumList: slashCommandReturnHelper.enumList({ allowObject: true }),
@@ -807,7 +1308,7 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'raw',
-                description: 'If true, does not alter quoted literal unnamed arguments',
+                description: t`If true, does not alter quoted literal unnamed arguments`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'true',
                 enumProvider: commonEnumProviders.boolean('trueFalse'),
@@ -821,23 +1322,23 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Sends a message as a specific character. Uses the character avatar if it exists in the characters list.
+            ${t`Sends a message as a specific character. Uses the character avatar if it exists in the characters list.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/sendas name="Chloe" Hello, guys!</code></pre>
-                    will send "Hello, guys!" from "Chloe".
+                    ${t`will send "Hello, guys!" from "Chloe".`}
                 </li>
                 <li>
                     <pre><code>/sendas name="Chloe" avatar="BigBadBoss" Hehehe, I am the big bad evil, fear me.</code></pre>
-                    will send a message as the character "Chloe", but utilizing the avatar from a character named "BigBadBoss".
+                    ${t`will send a message as the character "Chloe", but utilizing the avatar from a character named "BigBadBoss".`}
                 </li>
             </ul>
         </div>
         <div>
-            If "compact" is set to true, the message is sent using a compact layout.
+            ${t`If "compact" is set to true, the message is sent using a compact layout.`}
         </div>
     `,
     }));
@@ -846,11 +1347,11 @@ export function initDefaultSlashCommands() {
         rawQuotes: true,
         callback: sendNarratorMessage,
         aliases: ['nar'],
-        returns: 'Optionally the text of the sent message, if specified in the "return" argument',
+        returns: t`Optionally the text of the sent message, if specified in the "return" argument`,
         namedArgumentList: [
             new SlashCommandNamedArgument(
                 'compact',
-                'compact layout',
+                t`compact layout`,
                 [ARGUMENT_TYPE.BOOLEAN],
                 false,
                 false,
@@ -858,18 +1359,18 @@ export function initDefaultSlashCommands() {
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'at',
-                description: 'position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
+                description: t`position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how 'depth' usually works. For example, -1 will insert the message right before the last message in chat.`,
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 enumProvider: commonEnumProviders.messages({ allowIdAfter: true }),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'name',
-                description: 'Optional custom display name to use for this system narrator message.',
+                description: t`Optional custom display name to use for this system narrator message.`,
                 typeList: [ARGUMENT_TYPE.STRING],
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'return',
-                description: 'The way how you want the return value to be provided',
+                description: t`The way how you want the return value to be provided`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'none',
                 enumList: slashCommandReturnHelper.enumList({ allowObject: true }),
@@ -877,7 +1378,7 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'raw',
-                description: 'If true, does not alter quoted literal unnamed arguments',
+                description: t`If true, does not alter quoted literal unnamed arguments`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'true',
                 enumProvider: commonEnumProviders.boolean('trueFalse'),
@@ -891,13 +1392,13 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Sends a message as a system narrator.
+            ${t`Sends a message as a system narrator.`}
         </div>
         <div>
-            If <code>compact</code> is set to <code>true</code>, the message is sent using a compact layout.
+            ${t`If <code>compact</code> is set to <code>true</code>, the message is sent using a compact layout.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/sys The sun sets in the west.</code></pre>
@@ -914,20 +1415,20 @@ export function initDefaultSlashCommands() {
         callback: setNarratorName,
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'name', [ARGUMENT_TYPE.STRING], false,
+                t`name`, [ARGUMENT_TYPE.STRING], false,
             ),
         ],
-        helpString: 'Sets a name for future system narrator messages in this chat (display only). Default: System. Leave empty to reset.',
+        helpString: t`Sets a name for future system narrator messages in this chat (display only). Default: System. Leave empty to reset.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'comment',
         rawQuotes: true,
         callback: sendCommentMessage,
-        returns: 'Optionally the text of the sent message, if specified in the "return" argument',
+        returns: t`Optionally the text of the sent message, if specified in the "return" argument`,
         namedArgumentList: [
             new SlashCommandNamedArgument(
                 'compact',
-                'Whether to use a compact layout',
+                t`Whether to use a compact layout`,
                 [ARGUMENT_TYPE.BOOLEAN],
                 false,
                 false,
@@ -935,13 +1436,13 @@ export function initDefaultSlashCommands() {
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'at',
-                description: 'position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
+                description: t`position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how 'depth' usually works. For example, -1 will insert the message right before the last message in chat.`,
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 enumProvider: commonEnumProviders.messages({ allowIdAfter: true }),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'return',
-                description: 'The way how you want the return value to be provided',
+                description: t`The way how you want the return value to be provided`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'none',
                 enumList: slashCommandReturnHelper.enumList({ allowObject: true }),
@@ -949,7 +1450,7 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'raw',
-                description: 'If true, does not alter quoted literal unnamed arguments',
+                description: t`If true, does not alter quoted literal unnamed arguments`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'true',
                 enumProvider: commonEnumProviders.boolean('trueFalse'),
@@ -965,13 +1466,13 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Adds a note/comment message not part of the chat.
+            ${t`Adds a note/comment message not part of the chat.`}
         </div>
         <div>
-            If <code>compact</code> is set to <code>true</code>, the message is sent using a compact layout.
+            ${t`If <code>compact</code> is set to <code>true</code>, the message is sent using a compact layout.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/comment This is a comment</code></pre>
@@ -987,19 +1488,19 @@ export function initDefaultSlashCommands() {
         name: 'single',
         callback: setStoryModeCallback,
         aliases: ['story'],
-        helpString: 'Sets the message style to single document mode without names or avatars visible.',
+        helpString: t`Sets the message style to single document mode without names or avatars visible.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'bubble',
         callback: setBubbleModeCallback,
         aliases: ['bubbles'],
-        helpString: 'Sets the message style to bubble chat mode.',
+        helpString: t`Sets the message style to bubble chat mode.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'flat',
         callback: setFlatModeCallback,
         aliases: ['default'],
-        helpString: 'Sets the message style to flat chat mode.',
+        helpString: t`Sets the message style to flat chat mode.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'continue',
@@ -1008,7 +1509,7 @@ export function initDefaultSlashCommands() {
         namedArgumentList: [
             new SlashCommandNamedArgument(
                 'await',
-                'Whether to await for the continued generation before proceeding',
+                t`Whether to await for the continued generation before proceeding`,
                 [ARGUMENT_TYPE.BOOLEAN],
                 false,
                 false,
@@ -1022,39 +1523,99 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Continues the last message in the chat, with an optional additional prompt.
+            ${t`Continues the last message in the chat, with an optional additional prompt.`}
         </div>
         <div>
-            If <code>await=true</code> named argument is passed, the command will await for the continued generation before proceeding.
+            ${t`If <code>await=true</code> named argument is passed, the command will await for the continued generation before proceeding.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/continue</code></pre>
-                    Continues the chat with no additional prompt and immediately proceeds to the next command.
+                    ${t`Continues the chat with no additional prompt and immediately proceeds to the next command.`}
                 </li>
                 <li>
                     <pre><code>/continue await=true Let's explore this further...</code></pre>
-                    Continues the chat with the provided prompt and waits for the generation to finish.
+                    ${t`Continues the chat with the provided prompt and waits for the generation to finish.`}
                 </li>
             </ul>
         </div>
     `,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'regenerate',
+        callback: regenerateChatCallback,
+        aliases: ['regen'],
+        namedArgumentList: [
+            new SlashCommandNamedArgument(
+                'await',
+                t`Whether to await for the regeneration before proceeding`,
+                [ARGUMENT_TYPE.BOOLEAN],
+                false,
+                false,
+                'false',
+            ),
+        ],
+        helpString: `
+        <div>
+            ${t`Regenerates the latest reply in the chat.`}
+        </div>
+        <div>
+            ${t`If <code>await=true</code> named argument is passed, the command will await for the regeneration before proceeding.`}
+        </div>
+    `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'swipe',
+        callback: swipeChatCallback,
+        namedArgumentList: [
+            new SlashCommandNamedArgument(
+                'direction',
+                t`Swipe direction`,
+                [ARGUMENT_TYPE.STRING],
+                false,
+                false,
+                SWIPE_DIRECTION.RIGHT,
+                [
+                    new SlashCommandEnumValue(SWIPE_DIRECTION.RIGHT, t`Swipe to the next reply`, enumTypes.enum, enumIcons.default),
+                    new SlashCommandEnumValue(SWIPE_DIRECTION.LEFT, t`Swipe to the previous reply`, enumTypes.enum, enumIcons.default),
+                ],
+                [],
+                null,
+                true,
+            ),
+            new SlashCommandNamedArgument(
+                'await',
+                t`Whether to await for the swipe action before proceeding`,
+                [ARGUMENT_TYPE.BOOLEAN],
+                false,
+                false,
+                'false',
+            ),
+        ],
+        helpString: `
+        <div>
+            ${t`Swipes the latest reply. Defaults to <code>direction=right</code>; use <code>direction=left</code> to go to the previous reply. If no next swipe exists, behavior depends on message context.`}
+        </div>
+        <div>
+            ${t`If <code>await=true</code> named argument is passed, the command will await for the swipe action before proceeding.`}
+        </div>
+    `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'go',
         callback: goToCharacterCallback,
-        returns: 'The character/group name',
+        returns: t`The character/group name`,
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'Character name - or unique character identifier (avatar key)',
+                description: t`Character name - or unique character identifier (avatar key)`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumProvider: commonEnumProviders.characters('all'),
             }),
         ],
-        helpString: 'Opens up a chat with the character or group by its name',
+        helpString: t`Opens up a chat with the character or group by its name`,
         aliases: ['char'],
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
@@ -1064,21 +1625,21 @@ export function initDefaultSlashCommands() {
             const renamed = await renameCharacter(name, { silent: isTrueBoolean(silent), renameChats: chats !== null ? isTrueBoolean(chats) : null });
             return String(renamed);
         },
-        returns: 'true/false - Whether the rename was successful',
+        returns: t`true/false - Whether the rename was successful`,
         namedArgumentList: [
             new SlashCommandNamedArgument(
-                'silent', 'Hide any blocking popups. (if false, the name is optional. If not supplied, a popup asking for it will appear)', [ARGUMENT_TYPE.BOOLEAN], false, false, 'true',
+                'silent', t`Hide any blocking popups. (if false, the name is optional. If not supplied, a popup asking for it will appear)`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'true',
             ),
             new SlashCommandNamedArgument(
-                'chats', 'Rename char in all previous chats', [ARGUMENT_TYPE.BOOLEAN], false, false, '<null>',
+                'chats', t`Rename char in all previous chats`, [ARGUMENT_TYPE.BOOLEAN], false, false, '<null>',
             ),
         ],
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'new char name', [ARGUMENT_TYPE.STRING], true,
+                t`new char name`, [ARGUMENT_TYPE.STRING], true,
             ),
         ],
-        helpString: 'Renames the current character.',
+        helpString: t`Renames the current character.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'sysgen',
@@ -1086,7 +1647,7 @@ export function initDefaultSlashCommands() {
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'trim',
-                description: 'Trim the output by the last sentence boundary',
+                description: t`Trim the output by the last sentence boundary`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 isRequired: false,
@@ -1094,7 +1655,7 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'compact',
-                description: 'Use a compact layout for the message',
+                description: t`Use a compact layout for the message`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 isRequired: false,
@@ -1103,18 +1664,18 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'at',
-                description: 'Position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
+                description: t`Position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how 'depth' usually works. For example, -1 will insert the message right before the last message in chat.`,
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 enumProvider: commonEnumProviders.messages({ allowIdAfter: true }),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'name',
-                description: 'Optional custom display name to use for this system narrator message.',
+                description: t`Optional custom display name to use for this system narrator message.`,
                 typeList: [ARGUMENT_TYPE.STRING],
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'return',
-                description: 'The way how you want the return value to be provided',
+                description: t`The way how you want the return value to be provided`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'none',
                 enumList: slashCommandReturnHelper.enumList({ allowObject: true }),
@@ -1126,23 +1687,23 @@ export function initDefaultSlashCommands() {
                 'prompt', [ARGUMENT_TYPE.STRING], true,
             ),
         ],
-        helpString: 'Generates a system message using a specified prompt.',
+        helpString: t`Generates a system message using a specified prompt.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'ask',
         callback: askCharacter,
-        returns: 'Optionally the text of the sent message, if specified in the "return" argument',
+        returns: t`Optionally the text of the sent message, if specified in the "return" argument`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'name',
-                description: 'Character name - or unique character identifier (avatar key)',
+                description: t`Character name - or unique character identifier (avatar key)`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumProvider: commonEnumProviders.characters('character'),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'return',
-                description: 'The way how you want the return value to be provided',
+                description: t`The way how you want the return value to be provided`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'pipe',
                 enumList: slashCommandReturnHelper.enumList({ allowObject: true }),
@@ -1154,7 +1715,7 @@ export function initDefaultSlashCommands() {
                 'prompt', [ARGUMENT_TYPE.STRING], false, false,
             ),
         ],
-        helpString: 'Asks a specified character card a prompt. Character name must be provided in a named argument.',
+        helpString: t`Asks a specified character card a prompt. Character name must be provided in a named argument.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'delname',
@@ -1162,7 +1723,7 @@ export function initDefaultSlashCommands() {
         namedArgumentList: [],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'Character name - or unique character identifier (avatar key)',
+                description: t`Character name - or unique character identifier (avatar key)`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumProvider: commonEnumProviders.characters('character'),
@@ -1171,10 +1732,10 @@ export function initDefaultSlashCommands() {
         aliases: ['cancel'],
         helpString: `
         <div>
-            Deletes all messages attributed to a specified name.
+            ${t`Deletes all messages attributed to a specified name.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/delname John</code></pre>
@@ -1187,11 +1748,11 @@ export function initDefaultSlashCommands() {
         name: 'send',
         rawQuotes: true,
         callback: sendUserMessageCallback,
-        returns: 'Optionally the text of the sent message, if specified in the "return" argument',
+        returns: t`Optionally the text of the sent message, if specified in the "return" argument`,
         namedArgumentList: [
             new SlashCommandNamedArgument(
                 'compact',
-                'whether to use a compact layout',
+                t`whether to use a compact layout`,
                 [ARGUMENT_TYPE.BOOLEAN],
                 false,
                 false,
@@ -1199,20 +1760,20 @@ export function initDefaultSlashCommands() {
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'at',
-                description: 'position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
+                description: t`position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how 'depth' usually works. For example, -1 will insert the message right before the last message in chat.`,
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 enumProvider: commonEnumProviders.messages({ allowIdAfter: true }),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'name',
-                description: 'display name',
+                description: t`display name`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: '{{user}}',
                 enumProvider: commonEnumProviders.personas,
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'return',
-                description: 'The way how you want the return value to be provided',
+                description: t`The way how you want the return value to be provided`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'none',
                 enumList: slashCommandReturnHelper.enumList({ allowObject: true }),
@@ -1220,7 +1781,7 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'raw',
-                description: 'If true, does not alter quoted literal unnamed arguments',
+                description: t`If true, does not alter quoted literal unnamed arguments`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'true',
                 enumProvider: commonEnumProviders.boolean('trueFalse'),
@@ -1236,16 +1797,16 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Adds a user message to the chat log without triggering a generation.
+            ${t`Adds a user message to the chat log without triggering a generation.`}
         </div>
         <div>
-            If <code>compact</code> is set to <code>true</code>, the message is sent using a compact layout.
+            ${t`If <code>compact</code> is set to <code>true</code>, the message is sent using a compact layout.`}
         </div>
         <div>
-            If <code>name</code> is set, it will be displayed as the message sender. Can be an empty for no name.
+            ${t`If <code>name</code> is set, it will be displayed as the message sender. Can be an empty for no name.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/send Hello there!</code></pre>
@@ -1263,7 +1824,7 @@ export function initDefaultSlashCommands() {
         namedArgumentList: [
             new SlashCommandNamedArgument(
                 'await',
-                'Whether to await for the triggered generation before continuing',
+                t`Whether to await for the triggered generation before continuing`,
                 [ARGUMENT_TYPE.BOOLEAN],
                 false,
                 false,
@@ -1272,7 +1833,7 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'group member index (starts with 0) or name',
+                description: t`group member index (starts with 0) or name`,
                 typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.STRING],
                 isRequired: false,
                 enumProvider: commonEnumProviders.groupMembers(),
@@ -1280,10 +1841,10 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Triggers a message generation. If in group, can trigger a message for the specified group member index or name.
+            ${t`Triggers a message generation. If in group, can trigger a message for the specified group member index or name.`}
         </div>
         <div>
-            If <code>await=true</code> named argument is passed, the command will await for the triggered generation before continuing.
+            ${t`If <code>await=true</code> named argument is passed, the command will await for the triggered generation before continuing.`}
         </div>
     `,
     }));
@@ -1293,7 +1854,7 @@ export function initDefaultSlashCommands() {
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'name',
-                description: 'only hide messages from a certain character or persona',
+                description: t`only hide messages from a certain character or persona`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumProvider: commonEnumProviders.messageNames,
                 isRequired: false,
@@ -1302,13 +1863,13 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'message index (starts with 0) or range, defaults to the last message index if not provided',
+                description: t`message index (starts with 0) or range, defaults to the last message index if not provided`,
                 typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.RANGE],
                 isRequired: false,
                 enumProvider: commonEnumProviders.messages(),
             }),
         ],
-        helpString: 'Hides a chat message from the prompt.',
+        helpString: t`Hides a chat message from the prompt.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'unhide',
@@ -1316,7 +1877,7 @@ export function initDefaultSlashCommands() {
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'name',
-                description: 'only unhide messages from a certain character or persona',
+                description: t`only unhide messages from a certain character or persona`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumProvider: commonEnumProviders.messageNames,
                 isRequired: false,
@@ -1325,36 +1886,36 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'message index (starts with 0) or range, defaults to the last message index if not provided',
+                description: t`message index (starts with 0) or range, defaults to the last message index if not provided`,
                 typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.RANGE],
                 isRequired: false,
                 enumProvider: commonEnumProviders.messages(),
             }),
         ],
-        helpString: 'Unhides a message from the prompt.',
+        helpString: t`Unhides a message from the prompt.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'member-get',
         aliases: ['getmember', 'memberget'],
         callback: (async ({ field = 'name' }, arg) => {
             if (!selected_group) {
-                toastr.warning('Cannot run /member-get command outside of a group chat.');
+                toastr.warning(t`Cannot run /member-get command outside of a group chat.`);
                 return '';
             }
             if (field === '') {
-                toastr.warning('\'/member-get field=\' argument required!');
+                toastr.warning(t`'/member-get field=' argument required!`);
                 return '';
             }
             field = field.toString();
             arg = arg.toString();
             if (!['name', 'index', 'id', 'avatar'].includes(field)) {
-                toastr.warning('\'/member-get field=\' argument required!');
+                toastr.warning(t`'/member-get field=' argument required!`);
                 return '';
             }
             const isId = !isNaN(parseInt(arg));
             const groupMember = findGroupMemberId(arg, true);
             if (!groupMember) {
-                toastr.warning(`No group member found using ${isId ? 'id' : 'string'} ${arg}`);
+                toastr.warning(t`No group member found using ${isId ? 'id' : 'string'} ${arg}`);
                 return '';
             }
             return groupMember[field];
@@ -1362,27 +1923,27 @@ export function initDefaultSlashCommands() {
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'field',
-                description: 'Whether to retrieve the name, index, id, or avatar.',
+                description: t`Whether to retrieve the name, index, id, or avatar.`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 defaultValue: 'name',
                 enumList: [
-                    new SlashCommandEnumValue('name', 'Character name'),
-                    new SlashCommandEnumValue('index', 'Group member index'),
-                    new SlashCommandEnumValue('avatar', 'Character avatar'),
-                    new SlashCommandEnumValue('id', 'Character index'),
+                    new SlashCommandEnumValue('name', t`Character name`),
+                    new SlashCommandEnumValue('index', t`Group member index`),
+                    new SlashCommandEnumValue('avatar', t`Character avatar`),
+                    new SlashCommandEnumValue('id', t`Character index`),
                 ],
             }),
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'member index (starts with 0), name, or avatar',
+                description: t`member index (starts with 0), name, or avatar`,
                 typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumProvider: commonEnumProviders.groupMembers(),
             }),
         ],
-        helpString: 'Retrieves a group member\'s name, index, id, or avatar.',
+        helpString: t`Retrieves a group member's name, index, id, or avatar.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'member-disable',
@@ -1390,13 +1951,13 @@ export function initDefaultSlashCommands() {
         aliases: ['disable', 'disablemember', 'memberdisable'],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'member index (starts with 0) or name',
+                description: t`member index (starts with 0) or name`,
                 typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumProvider: commonEnumProviders.groupMembers(),
             }),
         ],
-        helpString: 'Disables a group member from being drafted for replies.',
+        helpString: t`Disables a group member from being drafted for replies.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'member-enable',
@@ -1404,13 +1965,13 @@ export function initDefaultSlashCommands() {
         callback: enableGroupMemberCallback,
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'member index (starts with 0) or name',
+                description: t`member index (starts with 0) or name`,
                 typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumProvider: commonEnumProviders.groupMembers(),
             }),
         ],
-        helpString: 'Enables a group member to be drafted for replies.',
+        helpString: t`Enables a group member to be drafted for replies.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'member-add',
@@ -1418,7 +1979,7 @@ export function initDefaultSlashCommands() {
         aliases: ['addmember', 'memberadd'],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'Character name - or unique character identifier (avatar key)',
+                description: t`Character name - or unique character identifier (avatar key)`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumProvider: () => selected_group ? commonEnumProviders.characters('character')() : [],
@@ -1426,10 +1987,10 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Adds a new group member to the group chat.
+            ${t`Adds a new group member to the group chat.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/member-add John Doe</code></pre>
@@ -1444,7 +2005,7 @@ export function initDefaultSlashCommands() {
         aliases: ['removemember', 'memberremove'],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'member index (starts with 0) or name',
+                description: t`member index (starts with 0) or name`,
                 typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumProvider: commonEnumProviders.groupMembers(),
@@ -1452,10 +2013,10 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Removes a group member from the group chat.
+            ${t`Removes a group member from the group chat.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/member-remove 2</code></pre>
@@ -1471,13 +2032,13 @@ export function initDefaultSlashCommands() {
         aliases: ['upmember', 'memberup'],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'member index (starts with 0) or name',
+                description: t`member index (starts with 0) or name`,
                 typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumProvider: commonEnumProviders.groupMembers(),
             }),
         ],
-        helpString: 'Moves a group member up in the group chat list.',
+        helpString: t`Moves a group member up in the group chat list.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'member-down',
@@ -1485,13 +2046,13 @@ export function initDefaultSlashCommands() {
         aliases: ['downmember', 'memberdown'],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'member index (starts with 0) or name',
+                description: t`member index (starts with 0) or name`,
                 typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumProvider: commonEnumProviders.groupMembers(),
             }),
         ],
-        helpString: 'Moves a group member down in the group chat list.',
+        helpString: t`Moves a group member down in the group chat list.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'member-peek',
@@ -1499,7 +2060,7 @@ export function initDefaultSlashCommands() {
         callback: peekCallback,
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'member index (starts with 0) or name',
+                description: t`member index (starts with 0) or name`,
                 typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumProvider: commonEnumProviders.groupMembers(),
@@ -1507,14 +2068,14 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Shows a group member character card without switching chats.
+            ${t`Shows a group member character card without switching chats.`}
         </div>
         <div>
-            <strong>Examples:</strong>
+            <strong>${t`Examples:`}</strong>
             <ul>
                 <li>
                     <pre><code>/peek Gloria</code></pre>
-                    Shows the character card for the character named "Gloria".
+                    ${t`Shows the character card for the character named "Gloria".`}
                 </li>
             </ul>
         </div>
@@ -1524,16 +2085,16 @@ export function initDefaultSlashCommands() {
         name: 'member-count',
         callback: countGroupMemberCallback,
         aliases: ['countmember', 'membercount'],
-        helpString: 'Returns the total number of group members in the group chat list.',
+        helpString: t`Returns the total number of group members in the group chat list.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'delswipe',
         callback: deleteSwipeCallback,
-        returns: 'the new, currently selected swipe id',
+        returns: t`the new, currently selected swipe id`,
         aliases: ['swipedel'],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: '1-based swipe id',
+                description: t`1-based swipe id`,
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 isRequired: true,
                 enumProvider: () => Array.isArray(chat[chat.length - 1]?.swipes) ?
@@ -1543,18 +2104,18 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Deletes a swipe from the last chat message. If swipe id is not provided, it deletes the current swipe.
+            ${t`Deletes a swipe from the last chat message. If swipe id is not provided, it deletes the current swipe.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/delswipe</code></pre>
-                    Deletes the current swipe.
+                    ${t`Deletes the current swipe.`}
                 </li>
                 <li>
                     <pre><code>/delswipe 2</code></pre>
-                    Deletes the second swipe from the last chat message.
+                    ${t`Deletes the second swipe from the last chat message.`}
                 </li>
             </ul>
         </div>
@@ -1564,14 +2125,14 @@ export function initDefaultSlashCommands() {
         name: 'echo',
         rawQuotes: true,
         callback: echoCallback,
-        returns: 'the text',
+        returns: t`the text`,
         namedArgumentList: [
             new SlashCommandNamedArgument(
-                'title', 'title of the toast message', [ARGUMENT_TYPE.STRING], false,
+                'title', t`title of the toast message`, [ARGUMENT_TYPE.STRING], false,
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'severity',
-                description: 'severity level of the toast message',
+                description: t`severity level of the toast message`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'info',
                 enumProvider: () => [
@@ -1583,54 +2144,54 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'timeout',
-                description: 'time in milliseconds to display the toast message. Set this and \'extendedTimeout\' to 0 to show indefinitely until dismissed.',
+                description: t`time in milliseconds to display the toast message. Set this and 'extendedTimeout' to 0 to show indefinitely until dismissed.`,
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 defaultValue: `${toastr.options.timeOut}`,
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'extendedTimeout',
-                description: 'time in milliseconds to display the toast message. Set this and \'timeout\' to 0 to show indefinitely until dismissed.',
+                description: t`time in milliseconds to display the toast message. Set this and 'timeout' to 0 to show indefinitely until dismissed.`,
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 defaultValue: `${toastr.options.extendedTimeOut}`,
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'preventDuplicates',
-                description: 'prevent duplicate toasts with the same message from being displayed.',
+                description: t`prevent duplicate toasts with the same message from being displayed.`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 enumList: commonEnumProviders.boolean('trueFalse')(),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'awaitDismissal',
-                description: 'wait for the toast to be dismissed before continuing.',
+                description: t`wait for the toast to be dismissed before continuing.`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 enumList: commonEnumProviders.boolean('trueFalse')(),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'cssClass',
-                description: 'additional CSS class to add to the toast message (e.g. for custom styling)',
+                description: t`additional CSS class to add to the toast message (e.g. for custom styling)`,
                 typeList: [ARGUMENT_TYPE.STRING],
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'color',
-                description: 'custom CSS color of the toast message. Accepts all valid CSS color values (e.g. \'red\', \'#FF0000\', \'rgb(255, 0, 0)\').<br />>Can be more customizable with the \'cssClass\' argument and custom classes.',
+                description: t`custom CSS color of the toast message. Accepts all valid CSS color values (e.g. 'red', '#FF0000', 'rgb(255, 0, 0)').<br />>Can be more customizable with the 'cssClass' argument and custom classes.`,
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'escapeHtml',
-                description: 'whether to escape HTML in the toast message.',
+                description: t`whether to escape HTML in the toast message.`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'true',
                 enumList: commonEnumProviders.boolean('trueFalse')(),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'onClick',
-                description: 'a closure to call when the toast is clicked. This executed closure receives scope as provided in the script. Careful about possible side effects when manipulating variables and more.',
+                description: t`a closure to call when the toast is clicked. This executed closure receives scope as provided in the script. Careful about possible side effects when manipulating variables and more.`,
                 typeList: [ARGUMENT_TYPE.CLOSURE],
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'raw',
-                description: 'If true, does not alter quoted literal unnamed arguments',
+                description: t`If true, does not alter quoted literal unnamed arguments`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'true',
                 enumProvider: commonEnumProviders.boolean('trueFalse'),
@@ -1665,32 +2226,32 @@ export function initDefaultSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'gen',
         callback: generateCallback,
-        returns: 'generated text',
+        returns: t`generated text`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'trim',
-                description: 'Trim the output by the last sentence boundary',
+                description: t`Trim the output by the last sentence boundary`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 isRequired: false,
                 enumProvider: commonEnumProviders.boolean('trueFalse'),
             }),
             new SlashCommandNamedArgument(
-                'lock', 'lock user input during generation', [ARGUMENT_TYPE.BOOLEAN], false, false, null, commonEnumProviders.boolean('onOff')(),
+                'lock', t`lock user input during generation`, [ARGUMENT_TYPE.BOOLEAN], false, false, null, commonEnumProviders.boolean('onOff')(),
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'name',
-                description: 'in-prompt character name for instruct mode (or unique character identifier (avatar key), which will be used as name)',
+                description: t`in-prompt character name for instruct mode (or unique character identifier (avatar key), which will be used as name)`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'System',
                 enumProvider: () => [...commonEnumProviders.characters('character')(), new SlashCommandEnumValue('System', null, enumTypes.enum, enumIcons.assistant)],
             }),
             new SlashCommandNamedArgument(
-                'length', 'API response length in tokens', [ARGUMENT_TYPE.NUMBER], false,
+                'length', t`API response length in tokens`, [ARGUMENT_TYPE.NUMBER], false,
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'as',
-                description: 'role of the output prompt',
+                description: t`role of the output prompt`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumList: [
                     new SlashCommandEnumValue('system', null, enumTypes.enum, enumIcons.assistant),
@@ -1705,30 +2266,30 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Generates text using the provided prompt and passes it to the next command through the pipe, optionally locking user input while generating and allowing to configure the in-prompt name for instruct mode (default = "System").
+            ${t`Generates text using the provided prompt and passes it to the next command through the pipe, optionally locking user input while generating and allowing to configure the in-prompt name for instruct mode (default = "System").`}
         </div>
         <div>
-            "as" argument controls the role of the output prompt: system (default) or char. If "length" argument is provided as a number in tokens, allows to temporarily override an API response length.
+            ${t`"as" argument controls the role of the output prompt: system (default) or char. If "length" argument is provided as a number in tokens, allows to temporarily override an API response length.`}
         </div>
     `,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'genraw',
         callback: generateRawCallback,
-        returns: 'generated text',
+        returns: t`generated text`,
         namedArgumentList: [
             new SlashCommandNamedArgument(
-                'lock', 'lock user input during generation', [ARGUMENT_TYPE.BOOLEAN], false, false, 'off', commonEnumProviders.boolean('onOff')(),
+                'lock', t`lock user input during generation`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'off', commonEnumProviders.boolean('onOff')(),
             ),
             new SlashCommandNamedArgument(
-                'instruct', 'use instruct mode', [ARGUMENT_TYPE.BOOLEAN], false, false, 'on', commonEnumProviders.boolean('onOff')(),
+                'instruct', t`use instruct mode`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'on', commonEnumProviders.boolean('onOff')(),
             ),
             new SlashCommandNamedArgument(
-                'stop', 'one-time custom stop strings', [ARGUMENT_TYPE.LIST], false, false, '[]',
+                'stop', t`one-time custom stop strings`, [ARGUMENT_TYPE.LIST], false, false, '[]',
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'as',
-                description: 'role of the output prompt',
+                description: t`role of the output prompt`,
                 defaultValue: 'system',
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumList: [
@@ -1737,16 +2298,16 @@ export function initDefaultSlashCommands() {
                 ],
             }),
             new SlashCommandNamedArgument(
-                'system', 'system prompt at the start', [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.VARIABLE_NAME], false,
+                'system', t`system prompt at the start`, [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.VARIABLE_NAME], false,
             ),
             new SlashCommandNamedArgument(
-                'prefill', 'prefill prompt at the end', [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.VARIABLE_NAME], false,
+                'prefill', t`prefill prompt at the end`, [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.VARIABLE_NAME], false,
             ),
             new SlashCommandNamedArgument(
-                'length', 'API response length in tokens', [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.VARIABLE_NAME], false,
+                'length', t`API response length in tokens`, [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.VARIABLE_NAME], false,
             ),
             new SlashCommandNamedArgument(
-                'trim', 'trim {{user}} and {{char}} prefixes from the output', [ARGUMENT_TYPE.BOOLEAN], false, false, 'on', commonEnumProviders.boolean('onOff')(),
+                'trim', t`trim {{user}} and {{char}} prefixes from the output`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'on', commonEnumProviders.boolean('onOff')(),
             ),
         ],
         unnamedArgumentList: [
@@ -1756,31 +2317,31 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Generates text using the provided prompt and passes it to the next command through the pipe, optionally locking user input while generating. Does not include chat history or character card.
+            ${t`Generates text using the provided prompt and passes it to the next command through the pipe, optionally locking user input while generating. Does not include chat history or character card.`}
         </div>
         <div>
-            Use instruct=off to skip instruct formatting, e.g. <pre><code>/genraw instruct=off Why is the sky blue?</code></pre>
+            ${t`Use instruct=off to skip instruct formatting, e.g. <pre><code>/genraw instruct=off Why is the sky blue?</code></pre>`}
         </div>
         <div>
-            Use stop=... with a JSON-serialized array to add one-time custom stop strings, e.g. <pre><code>/genraw stop=["\\n"] Say hi</code></pre>
+            ${t`Use stop=... with a JSON-serialized array to add one-time custom stop strings, e.g. <pre><code>/genraw stop=["\\n"] Say hi</code></pre>`}
         </div>
         <div>
-            "as" argument controls the role of the output prompt: system (default) or char. "system" argument adds an (optional) system prompt at the start.
+            ${t`"as" argument controls the role of the output prompt: system (default) or char. "system" argument adds an (optional) system prompt at the start.`}
         </div>
         <div>
-            If "length" argument is provided as a number in tokens, allows to temporarily override an API response length.
+            ${t`If "length" argument is provided as a number in tokens, allows to temporarily override an API response length.`}
         </div>
     `,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'addswipe',
         callback: addSwipeCallback,
-        returns: 'the new swipe id',
+        returns: t`the new swipe id`,
         aliases: ['swipeadd'],
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'switch',
-                description: 'switch to the new swipe',
+                description: t`switch to the new swipe`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 enumList: commonEnumProviders.boolean()(),
             }),
@@ -1792,10 +2353,10 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Adds a swipe to the last chat message.
+            ${t`Adds a swipe to the last chat message.`}
         </div>
         <div>
-            Use switch=true to switch to directly switch to the new swipe.
+            ${t`Use switch=true to switch to directly switch to the new swipe.`}
         </div>`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
@@ -1804,14 +2365,13 @@ export function initDefaultSlashCommands() {
             const stopped = stopGeneration();
             return String(stopped);
         },
-        returns: 'true/false, whether the generation was running and got stopped',
+        returns: t`true/false, whether the generation was running and got stopped`,
         helpString: `
             <div>
-                Stops the generation and any streaming if it is currently running.
+                ${t`Stops the generation and any streaming if it is currently running.`}
             </div>
             <div>
-                Note: This command cannot be executed from the chat input, as sending any message or script from there is blocked during generation.
-                But it can be executed via automations or QR scripts/buttons.
+                ${t`Note: This command cannot be executed from the chat input, as sending any message or script from there is blocked during generation. But it can be executed via automations or QR scripts/buttons.`}
             </div>
         `,
         aliases: ['generate-stop'],
@@ -1822,27 +2382,27 @@ export function initDefaultSlashCommands() {
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'quiet',
-                description: 'Whether to suppress the toast message notifying about the /abort call.',
+                description: t`Whether to suppress the toast message notifying about the /abort call.`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'true',
             }),
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'The reason for aborting command execution. Shown when quiet=false',
+                description: t`The reason for aborting command execution. Shown when quiet=false`,
                 typeList: [ARGUMENT_TYPE.STRING],
             }),
         ],
-        helpString: 'Aborts the slash command batch execution.',
+        helpString: t`Aborts the slash command batch execution.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'fuzzy',
         callback: fuzzyCallback,
-        returns: 'matching item',
+        returns: t`matching item`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'list',
-                description: 'list of items to match against',
+                description: t`list of items to match against`,
                 acceptsMultiple: false,
                 isRequired: true,
                 typeList: [ARGUMENT_TYPE.LIST, ARGUMENT_TYPE.VARIABLE_NAME],
@@ -1850,7 +2410,7 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'threshold',
-                description: 'fuzzy match threshold (0.0 to 1.0)',
+                description: t`fuzzy match threshold (0.0 to 1.0)`,
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 isRequired: false,
                 defaultValue: '0.4',
@@ -1858,44 +2418,43 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'mode',
-                description: 'fuzzy match mode',
+                description: t`fuzzy match mode`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: false,
                 defaultValue: 'first',
                 acceptsMultiple: false,
                 enumList: [
-                    new SlashCommandEnumValue('first', 'first match below the threshold', enumTypes.enum, enumIcons.default),
-                    new SlashCommandEnumValue('best', 'best match below the threshold', enumTypes.enum, enumIcons.default),
+                    new SlashCommandEnumValue('first', t`first match below the threshold`, enumTypes.enum, enumIcons.default),
+                    new SlashCommandEnumValue('best', t`best match below the threshold`, enumTypes.enum, enumIcons.default),
                 ],
             }),
         ],
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text to search', [ARGUMENT_TYPE.STRING], true,
+                t`text to search`, [ARGUMENT_TYPE.STRING], true,
             ),
         ],
         helpString: `
         <div>
-            Performs a fuzzy match of each item in the <code>list</code> against the <code>text to search</code>.
-            If any item matches, then its name is returned. If no item matches the text, no value is returned.
+            ${t`Performs a fuzzy match of each item in the <code>list</code> against the <code>text to search</code>. If any item matches, then its name is returned. If no item matches the text, no value is returned.`}
         </div>
         <div>
-            The optional <code>threshold</code> (default is 0.4) allows control over the match strictness.
-            A low value (min 0.0) means the match is very strict.
-            At 1.0 (max) the match is very loose and will match anything.
+            ${t`The optional <code>threshold</code> (default is 0.4) allows control over the match strictness.`}
+            ${t`A low value (min 0.0) means the match is very strict.`}
+            ${t`At 1.0 (max) the match is very loose and will match anything.`}
         </div>
         <div>
-            The optional <code>mode</code> argument allows to control the behavior when multiple items match the text.
+            ${t`The optional <code>mode</code> argument allows to control the behavior when multiple items match the text.`}
             <ul>
-                <li><code>first</code> (default) returns the first match below the threshold.</li>
-                <li><code>best</code> returns the best match below the threshold.</li>
+                <li>${t`<code>first</code> (default) returns the first match below the threshold.`}</li>
+                <li>${t`<code>best</code> returns the best match below the threshold.`}</li>
             </ul>
         </div>
         <div>
-            The returned value passes to the next command through the pipe.
+            ${t`The returned value passes to the next command through the pipe.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/fuzzy list=["a","b","c"] threshold=0.4 abc</code></pre>
@@ -1908,23 +2467,23 @@ export function initDefaultSlashCommands() {
         name: 'pass',
         callback: (_, arg) => {
             // We do not support arrays of closures. Arrays of strings will be send as JSON
-            if (Array.isArray(arg) && arg.some(x => x instanceof SlashCommandClosure)) throw new Error('Command /pass does not support multiple closures');
+            if (Array.isArray(arg) && arg.some(x => x instanceof SlashCommandClosure)) throw new Error(t`Command /pass does not support multiple closures`);
             if (Array.isArray(arg)) return JSON.stringify(arg);
             return arg;
         },
-        returns: 'the provided value',
+        returns: t`the provided value`,
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text', [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.BOOLEAN, ARGUMENT_TYPE.LIST, ARGUMENT_TYPE.DICTIONARY, ARGUMENT_TYPE.CLOSURE], true,
+                t`text`, [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.BOOLEAN, ARGUMENT_TYPE.LIST, ARGUMENT_TYPE.DICTIONARY, ARGUMENT_TYPE.CLOSURE], true,
             ),
         ],
         aliases: ['return'],
         helpString: `
         <div>
-            <pre><span class="monospace">/pass (text)</span> – passes the text to the next command through the pipe.</pre>
+            <pre><span class="monospace">/pass (text)</span> – ${t`passes the text to the next command through the pipe.`}</pre>
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li><pre><code>/pass Hello world</code></pre></li>
             </ul>
@@ -1937,15 +2496,15 @@ export function initDefaultSlashCommands() {
         aliases: ['wait', 'sleep'],
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'milliseconds', [ARGUMENT_TYPE.NUMBER], true,
+                t`milliseconds`, [ARGUMENT_TYPE.NUMBER], true,
             ),
         ],
         helpString: `
         <div>
-            Delays the next command in the pipe by the specified number of milliseconds.
+            ${t`Delays the next command in the pipe by the specified number of milliseconds.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/delay 1000</code></pre>
@@ -1958,59 +2517,77 @@ export function initDefaultSlashCommands() {
         name: 'input',
         aliases: ['prompt'],
         callback: inputCallback,
-        returns: 'user input',
+        returns: t`user input`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'default',
-                description: 'default value of the input field',
+                description: t`default value of the input field`,
                 typeList: [ARGUMENT_TYPE.STRING],
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'large',
-                description: 'popup window will be shown larger in height, with more space for content (input field needs to be sized via \'rows\' argument)',
+                description: t`popup window will be shown larger in height, with more space for content (input field needs to be sized via 'rows' argument)`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'off',
                 enumList: commonEnumProviders.boolean('onOff')(),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'wide',
-                description: 'popup window will be shown wider, with a wider input field',
+                description: t`popup window will be shown wider, with a wider input field`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'off',
                 enumList: commonEnumProviders.boolean('onOff')(),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'okButton',
-                description: 'text for the ok button',
+                description: t`text for the ok button`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'Ok',
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'rows',
-                description: 'number of rows for the input field (lines being displayed)',
+                description: t`number of rows for the input field (lines being displayed)`,
                 typeList: [ARGUMENT_TYPE.NUMBER],
             }),
             SlashCommandNamedArgument.fromProps({
+                name: 'placeholder',
+                description: t`placeholder text displayed in the input field when empty`,
+                typeList: [ARGUMENT_TYPE.STRING],
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'tooltip',
+                description: t`tooltip text shown when hovering over the input field`,
+                typeList: [ARGUMENT_TYPE.STRING],
+            }),
+            SlashCommandNamedArgument.fromProps({
                 name: 'onSuccess',
-                description: 'closure to execute when the ok button is clicked or the input is closed as successful (via Enter, etc)',
+                description: t`closure to execute when the ok button is clicked or the input is closed as successful (via Enter, etc)`,
                 typeList: [ARGUMENT_TYPE.CLOSURE],
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'onCancel',
-                description: 'closure to execute when the cancel button is clicked or the input is closed as cancelled (via Escape, etc)',
+                description: t`closure to execute when the cancel button is clicked or the input is closed as cancelled (via Escape, etc)`,
                 typeList: [ARGUMENT_TYPE.CLOSURE],
             }),
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'text to display',
+                description: t`text to display`,
                 typeList: [ARGUMENT_TYPE.STRING],
             }),
         ],
         helpString: `
         <div>
-            Shows a popup with the provided text and an input field.
-            The <code>default</code> argument is the default value of the input field, and the text argument is the text to display.
+            ${t`Shows a popup with the provided text and an input field.`}
+            ${t`The <code>default</code> argument is the default value of the input field, and the text argument is the text to display.`}
+        </div>
+        <div>
+            <strong>${t`Example:`}</strong>
+            <ul>
+                <li>
+                    <pre><code>/input default="John" placeholder="Enter your name" tooltip="Your display name" What is your name?</code></pre>
+                </li>
+            </ul>
         </div>
     `,
     }));
@@ -2018,27 +2595,27 @@ export function initDefaultSlashCommands() {
         name: 'run',
         aliases: ['call', 'exec'],
         callback: runCallback,
-        returns: 'result of the executed closure of QR',
+        returns: t`result of the executed closure of QR`,
         namedArgumentList: [
             new SlashCommandNamedArgument(
-                'args', 'named arguments', [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.BOOLEAN, ARGUMENT_TYPE.LIST, ARGUMENT_TYPE.DICTIONARY], false, true,
+                'args', t`named arguments`, [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.BOOLEAN, ARGUMENT_TYPE.LIST, ARGUMENT_TYPE.DICTIONARY], false, true,
             ),
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'scoped variable or qr label',
+                description: t`scoped variable or qr label`,
                 typeList: [ARGUMENT_TYPE.VARIABLE_NAME, ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.CLOSURE],
                 isRequired: true,
                 enumProvider: (executor, scope) => [
                     ...commonEnumProviders.variables('scope')(executor, scope),
-                    ...(typeof window['qrEnumProviderExecutables'] === 'function') ? window['qrEnumProviderExecutables']() : [],
+                    ...(typeof globalThis.qrEnumProviderExecutables === 'function') ? globalThis.qrEnumProviderExecutables() : [],
                 ],
             }),
         ],
         helpString: `
         <div>
-            Runs a closure from a scoped variable, or a Quick Reply with the specified name from a currently active preset or from another preset.
-            Named arguments can be referenced in a QR with <code>{{arg::key}}</code>.
+            ${t`Runs a closure from a scoped variable, or a Quick Reply with the specified name from a currently active preset or from another preset.`}
+            ${t`Named arguments can be referenced in a QR with <code>{{arg::key}}</code>.`}
         </div>
     `,
     }));
@@ -2048,14 +2625,14 @@ export function initDefaultSlashCommands() {
         aliases: ['message'],
         namedArgumentList: [
             new SlashCommandNamedArgument(
-                'names', 'show message author names', [ARGUMENT_TYPE.BOOLEAN], false, false, 'off', commonEnumProviders.boolean('onOff')(),
+                'names', t`show message author names`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'off', commonEnumProviders.boolean('onOff')(),
             ),
             new SlashCommandNamedArgument(
-                'hidden', 'include hidden messages', [ARGUMENT_TYPE.BOOLEAN], false, false, 'on', commonEnumProviders.boolean('onOff')(),
+                'hidden', t`include hidden messages`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'on', commonEnumProviders.boolean('onOff')(),
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'role',
-                description: 'filter messages by role',
+                description: t`filter messages by role`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumList: [
                     new SlashCommandEnumValue('system', null, enumTypes.enum, enumIcons.system),
@@ -2066,33 +2643,33 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'message index (starts with 0) or range',
+                description: t`message index (starts with 0) or range`,
                 typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.RANGE],
                 isRequired: true,
                 enumProvider: commonEnumProviders.messages(),
             }),
         ],
-        returns: 'the specified message or range of messages as a string',
+        returns: t`the specified message or range of messages as a string`,
         helpString: `
         <div>
-            Returns the specified message or range of messages as a string.
+            ${t`Returns the specified message or range of messages as a string.`}
         </div>
         <div>
-            Use the <code>hidden=off</code> argument to exclude hidden messages.
+            ${t`Use the <code>hidden=off</code> argument to exclude hidden messages.`}
         </div>
         <div>
-            Use the <code>role</code> argument to filter messages by role. Possible values are: system, assistant, user.
+            ${t`Use the <code>role</code> argument to filter messages by role. Possible values are: system, assistant, user.`}
         </div>
         <div>
-            <strong>Examples:</strong>
+            <strong>${t`Examples:`}</strong>
             <ul>
                 <li>
                     <pre><code>/messages 10</code></pre>
-                    Returns the 10th message.
+                    ${t`Returns the 10th message.`}
                 </li>
                 <li>
                     <pre><code>/messages names=on 5-10</code></pre>
-                    Returns messages 5 through 10 with author names.
+                    ${t`Returns messages 5 through 10 with author names.`}
                 </li>
             </ul>
         </div>
@@ -2103,15 +2680,15 @@ export function initDefaultSlashCommands() {
         callback: setInputCallback,
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text', [ARGUMENT_TYPE.STRING], true,
+                t`text`, [ARGUMENT_TYPE.STRING], true,
             ),
         ],
         helpString: `
         <div>
-            Sets the user input to the specified text and passes it to the next command through the pipe.
+            ${t`Sets the user input to the specified text and passes it to the next command through the pipe.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/setinput Hello world</code></pre>
@@ -2123,76 +2700,81 @@ export function initDefaultSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'popup',
         callback: popupCallback,
-        returns: 'popup text',
+        returns: t`Popup text`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'scroll',
-                description: 'allows vertical scrolling of the content',
+                description: t`allows vertical scrolling of the content`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 enumList: commonEnumProviders.boolean('trueFalse')(),
                 defaultValue: 'true',
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'large',
-                description: 'show large popup',
+                description: t`show large popup`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 enumList: commonEnumProviders.boolean('trueFalse')(),
                 defaultValue: 'false',
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'wide',
-                description: 'show wide popup',
+                description: t`show wide popup`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 enumList: commonEnumProviders.boolean('trueFalse')(),
                 defaultValue: 'false',
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'wider',
-                description: 'show wider popup',
+                description: t`show wider popup`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 enumList: commonEnumProviders.boolean('trueFalse')(),
                 defaultValue: 'false',
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'transparent',
-                description: 'show transparent popup',
+                description: t`show transparent popup`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 enumList: commonEnumProviders.boolean('trueFalse')(),
                 defaultValue: 'false',
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'okButton',
-                description: 'text for the OK button',
+                description: t`text for the OK button`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'OK',
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'cancelButton',
-                description: 'text for the Cancel button',
+                description: t`text for the Cancel button`,
                 typeList: [ARGUMENT_TYPE.STRING],
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'result',
-                description: 'if enabled, returns the popup result (as an integer) instead of the popup text. Resolves to 1 for OK and 0 cancel button, empty string for exiting out.',
+                description: t`if enabled, returns the popup result (as an integer) instead of the popup text. Resolves to 1 for OK and 0 cancel button, empty string for exiting out.`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 enumList: commonEnumProviders.boolean('trueFalse')(),
                 defaultValue: 'false',
             }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'tooltip',
+                description: t`tooltip text shown when hovering over the popup content area`,
+                typeList: [ARGUMENT_TYPE.STRING],
+            }),
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'popup text',
+                description: t`popup text`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
             }),
         ],
         helpString: `
         <div>
-            Shows a blocking popup with the specified text and buttons.
-            Returns the popup text.
+            ${t`Shows a blocking popup with the specified text and buttons.`}
+            ${t`Returns the popup text.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/popup large=on wide=on okButton="Confirm" Please confirm this action.</code></pre>
@@ -2207,17 +2789,17 @@ export function initDefaultSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'buttons',
         callback: buttonsCallback,
-        returns: 'clicked button label (or array of labels if multiple is enabled)',
+        returns: t`clicked button label (or array of labels if multiple is enabled)`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'labels',
-                description: 'button labels',
+                description: t`button labels - can be an array of strings or objects with text, tooltip, and icon properties`,
                 typeList: [ARGUMENT_TYPE.LIST],
                 isRequired: true,
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'multiple',
-                description: 'if enabled multiple buttons can be clicked/toggled, and all clicked buttons are returned as an array',
+                description: t`if enabled multiple buttons can be clicked/toggled, and all clicked buttons are returned as an array`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 enumList: commonEnumProviders.boolean('trueFalse')(),
                 defaultValue: 'false',
@@ -2225,21 +2807,27 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'text',
+                description: t`text`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
             }),
         ],
         helpString: `
         <div>
-            Shows a blocking popup with the specified text and buttons.
-            Returns the clicked button label into the pipe or empty string if canceled.
+            ${t`Shows a blocking popup with the specified text and buttons.`}
+            ${t`Returns the clicked button label into the pipe or empty string if canceled.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            ${t`Labels can be simple strings or objects with <code>text</code>, <code>tooltip</code>, and <code>icon</code> (Font Awesome class) properties.`}
+        </div>
+        <div>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/buttons labels=["Yes","No"] Do you want to continue?</code></pre>
+                </li>
+                <li>
+                    <pre><code>/buttons labels=[{"text":"Save","icon":"fa-floppy-disk","tooltip":"Save changes"},{"text":"Cancel"}] Choose an action</code></pre>
                 </li>
             </ul>
         </div>
@@ -2248,14 +2836,14 @@ export function initDefaultSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'trimtokens',
         callback: trimTokensCallback,
-        returns: 'trimmed text',
+        returns: t`trimmed text`,
         namedArgumentList: [
             new SlashCommandNamedArgument(
-                'limit', 'number of tokens to keep', [ARGUMENT_TYPE.NUMBER], true,
+                'limit', t`number of tokens to keep`, [ARGUMENT_TYPE.NUMBER], true,
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'direction',
-                description: 'trim direction',
+                description: t`trim direction`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 enumList: [
@@ -2266,15 +2854,15 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text', [ARGUMENT_TYPE.STRING], false,
+                t`text`, [ARGUMENT_TYPE.STRING], false,
             ),
         ],
         helpString: `
         <div>
-            Trims the start or end of text to the specified number of tokens.
+            ${t`Trims the start or end of text to the specified number of tokens.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/trimtokens limit=5 direction=start This is a long sentence with many words</code></pre>
@@ -2286,18 +2874,18 @@ export function initDefaultSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'trimstart',
         callback: trimStartCallback,
-        returns: 'trimmed text',
+        returns: t`trimmed text`,
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text', [ARGUMENT_TYPE.STRING], true,
+                t`text`, [ARGUMENT_TYPE.STRING], true,
             ),
         ],
         helpString: `
         <div>
-            Trims the text to the start of the first full sentence.
+            ${t`Trims the text to the start of the first full sentence.`}
         </div>
         <div>
-            <strong>Example:</strong>
+            <strong>${t`Example:`}</strong>
             <ul>
                 <li>
                     <pre><code>/trimstart This is a sentence. And here is another sentence.</code></pre>
@@ -2309,38 +2897,38 @@ export function initDefaultSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'trimend',
         callback: trimEndCallback,
-        returns: 'trimmed text',
+        returns: t`trimmed text`,
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text', [ARGUMENT_TYPE.STRING], true,
+                t`text`, [ARGUMENT_TYPE.STRING], true,
             ),
         ],
-        helpString: 'Trims the text to the end of the last full sentence.',
+        helpString: t`Trims the text to the end of the last full sentence.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'inject',
-        returns: 'injection ID',
+        returns: t`injection ID`,
         callback: injectCallback,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'id',
-                description: 'injection ID',
+                description: t`injection ID`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: false,
                 enumProvider: commonEnumProviders.injects,
             }),
             new SlashCommandNamedArgument(
-                'position', 'injection position', [ARGUMENT_TYPE.STRING], false, false, 'after', ['before', 'after', 'chat', 'none'],
+                'position', t`injection position`, [ARGUMENT_TYPE.STRING], false, false, 'after', ['before', 'after', 'chat', 'none'],
             ),
             new SlashCommandNamedArgument(
-                'depth', 'injection depth', [ARGUMENT_TYPE.NUMBER], false, false, '4',
+                'depth', t`injection depth`, [ARGUMENT_TYPE.NUMBER], false, false, '4',
             ),
             new SlashCommandNamedArgument(
-                'scan', 'include injection content into World Info scans', [ARGUMENT_TYPE.BOOLEAN], false, false, 'false',
+                'scan', t`include injection content into World Info scans`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'false',
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'role',
-                description: 'role for in-chat injections',
+                description: t`role for in-chat injections`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: false,
                 enumList: [
@@ -2350,11 +2938,11 @@ export function initDefaultSlashCommands() {
                 ],
             }),
             new SlashCommandNamedArgument(
-                'ephemeral', 'remove injection after generation', [ARGUMENT_TYPE.BOOLEAN], false, false, 'false',
+                'ephemeral', t`remove injection after generation`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'false',
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'filter',
-                description: 'if a filter is defined, an injection will only be performed if the closure returns true',
+                description: t`if a filter is defined, an injection will only be performed if the closure returns true`,
                 typeList: [ARGUMENT_TYPE.CLOSURE],
                 isRequired: false,
                 acceptsMultiple: false,
@@ -2362,37 +2950,24 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text', [ARGUMENT_TYPE.STRING], false,
+                t`text`, [ARGUMENT_TYPE.STRING], false,
             ),
         ],
-        helpString: 'Injects a text into the LLM prompt for the current chat. Requires a unique injection ID (will be auto-generated if not provided). Positions: "before" main prompt, "after" main prompt, in-"chat", hidden with "none" (default: after). Depth: injection depth for the prompt (default: 4). Role: role for in-chat injections (default: system). Scan: include injection content into World Info scans (default: false). Hidden injects in "none" position are not inserted into the prompt but can be used for triggering WI entries. Returns the injection ID.',
+        helpString: t`Injects a text into the LLM prompt for the current chat. Requires a unique injection ID (will be auto-generated if not provided). Positions: "before" main prompt, "after" main prompt, in-"chat", hidden with "none" (default: after). Depth: injection depth for the prompt (default: 4). Role: role for in-chat injections (default: system). Scan: include injection content into World Info scans (default: false). Hidden injects in "none" position are not inserted into the prompt but can be used for triggering WI entries. Returns the injection ID.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'listinjects',
         callback: listInjectsCallback,
-        helpString: 'Lists all script injections for the current chat. Displays injects in a popup by default. Use the <code>return</code> argument to change the return type.',
-        returns: 'Optionalls the JSON object of script injections',
+        helpString: t`Lists all script injections for the current chat. Displays injects in a popup by default. Use the <code>return</code> argument to change the return type.`,
+        returns: t`Optionally the JSON object of script injections`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'return',
-                description: 'The way how you want the return value to be provided',
+                description: t`The way how you want the return value to be provided`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'popup-html',
                 enumList: slashCommandReturnHelper.enumList({ allowPipe: false, allowObject: true, allowChat: true, allowPopup: true, allowTextVersion: false }),
                 forceEnum: true,
-            }),
-            // TODO remove some day
-            SlashCommandNamedArgument.fromProps({
-                name: 'format',
-                description: '!!! DEPRECATED - use "return" instead !!! output format',
-                typeList: [ARGUMENT_TYPE.STRING],
-                isRequired: true,
-                forceEnum: true,
-                enumList: [
-                    new SlashCommandEnumValue('popup', 'Show injects in a popup.', enumTypes.enum, enumIcons.default),
-                    new SlashCommandEnumValue('chat', 'Post a system message to the chat.', enumTypes.enum, enumIcons.default),
-                    new SlashCommandEnumValue('none', 'Just return the injects as a JSON object.', enumTypes.enum, enumIcons.default),
-                ],
             }),
         ],
     }));
@@ -2401,37 +2976,37 @@ export function initDefaultSlashCommands() {
         aliases: ['flushinjects'],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'injection ID or a variable name pointing to ID',
+                description: t`injection ID or a variable name pointing to ID`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: '',
                 enumProvider: commonEnumProviders.injects,
             }),
         ],
         callback: flushInjectsCallback,
-        helpString: 'Removes a script injection for the current chat. If no ID is provided, removes all script injections.',
+        helpString: t`Removes a script injection for the current chat. If no ID is provided, removes all script injections.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'tokens',
         callback: (_, text) => {
-            if (text instanceof SlashCommandClosure || Array.isArray(text)) throw new Error('Unnamed argument cannot be a closure for command /tokens');
+            if (text instanceof SlashCommandClosure || Array.isArray(text)) throw new Error(t`Unnamed argument cannot be a closure for command /tokens`);
             return getTokenCountAsync(text).then(count => String(count));
         },
-        returns: 'number of tokens',
+        returns: t`number of tokens`,
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text', [ARGUMENT_TYPE.STRING], true,
+                t`text`, [ARGUMENT_TYPE.STRING], true,
             ),
         ],
-        helpString: 'Counts the number of tokens in the provided text.',
+        helpString: t`Counts the number of tokens in the provided text.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'model',
         callback: modelCallback,
-        returns: 'current model',
+        returns: t`current model`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'quiet',
-                description: 'suppress the toast message on model change',
+                description: t`suppress the toast message on model change`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 enumList: commonEnumProviders.boolean('trueFalse')(),
@@ -2439,22 +3014,22 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'model name',
+                description: t`model name`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumProvider: () => getModelOptions(true)?.options?.map(option => new SlashCommandEnumValue(option.value, option.value !== option.text ? option.text : null)) ?? [],
             }),
         ],
-        helpString: 'Sets the model for the current API. Gets the current model name if no argument is provided.',
+        helpString: t`Sets the model for the current API. Gets the current model name if no argument is provided.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'getpromptentry',
         aliases: ['getpromptentries'],
         callback: getPromptEntryCallback,
-        returns: 'true/false state of prompt(s)',
+        returns: t`true/false state of prompt(s)`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'identifier',
-                description: 'Prompt entry identifier(s) to retrieve',
+                description: t`Prompt entry identifier(s) to retrieve`,
                 typeList: [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.LIST],
                 acceptsMultiple: true,
                 enumProvider: () =>
@@ -2464,7 +3039,7 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'name',
-                description: 'Prompt entry name(s) to retrieve',
+                description: t`Prompt entry name(s) to retrieve`,
                 typeList: [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.LIST],
                 acceptsMultiple: true,
                 enumProvider: () =>
@@ -2474,7 +3049,7 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'return',
-                description: 'Whether the return will be simple, a list, or a dict.',
+                description: t`Whether the return will be simple, a list, or a dict.`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'simple',
                 enumList: ['simple', 'list', 'dict'],
@@ -2482,10 +3057,10 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
             <div>
-                Gets the state of the specified prompt entries.
+                ${t`Gets the state of the specified prompt entries.`}
             </div>
             <div>
-                If <code>return</code> is <code>simple</code> (default) then the return will be a single value if only one value was retrieved; otherwise uses a dict (if the identifier parameter was used) or a list.
+                ${t`If <code>return</code> is <code>simple</code> (default) then the return will be a single value if only one value was retrieved; otherwise uses a dict (if the identifier parameter was used) or a list.`}
             </div>
         `,
     }));
@@ -2496,7 +3071,7 @@ export function initDefaultSlashCommands() {
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'identifier',
-                description: 'Prompt entry identifier(s) to target',
+                description: t`Prompt entry identifier(s) to target`,
                 typeList: [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.LIST],
                 acceptsMultiple: true,
                 enumProvider: () => {
@@ -2506,7 +3081,7 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'name',
-                description: 'Prompt entry name(s) to target',
+                description: t`Prompt entry name(s) to target`,
                 typeList: [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.LIST],
                 acceptsMultiple: true,
                 enumProvider: () => {
@@ -2517,7 +3092,7 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'Set entry/entries on or off',
+                description: t`Set entry/entries on or off`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 acceptsMultiple: false,
@@ -2525,16 +3100,16 @@ export function initDefaultSlashCommands() {
                 enumList: commonEnumProviders.boolean('onOffToggle')(),
             }),
         ],
-        helpString: 'Sets the specified prompt manager entry/entries on or off.',
+        helpString: t`Sets the specified prompt manager entry/entries on or off.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'pick-icon',
         callback: async () => ((await showFontAwesomePicker()) ?? false).toString(),
-        returns: 'The chosen icon name or false if cancelled.',
+        returns: t`The chosen icon name or false if cancelled.`,
         helpString: `
-                <div>Opens a popup with all the available Font Awesome icons and returns the selected icon's name.</div>
+                <div>${t`Opens a popup with all the available Font Awesome icons and returns the selected icon's name.`}</div>
                 <div>
-                    <strong>Example:</strong>
+                    <strong>${t`Example:`}</strong>
                     <ul>
                         <li>
                             <pre><code>/pick-icon |\n/if left={{pipe}} rule=eq right=false\n\telse={: /echo chosen icon: "{{pipe}}" :}\n\t{: /echo cancelled icon selection :}\n|</code></pre>
@@ -2546,29 +3121,32 @@ export function initDefaultSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'api-url',
         callback: setApiUrlCallback,
-        returns: 'the current API url',
+        returns: t`the current API url`,
         aliases: ['server'],
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'api',
-                description: 'API to set/get the URL for - if not provided, current API is used',
+                description: t`API to set/get the URL for - if not provided, current API is used`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumList: [
                     new SlashCommandEnumValue('custom', 'custom OpenAI-compatible', enumTypes.getBasedOnIndex(UNIQUE_APIS.findIndex(x => x === 'openai')), 'O'),
+                    new SlashCommandEnumValue('zai', 'Z.AI', enumTypes.getBasedOnIndex(UNIQUE_APIS.findIndex(x => x === 'zai')), 'Z'),
+                    new SlashCommandEnumValue('vertexai', 'Google Vertex AI', enumTypes.getBasedOnIndex(UNIQUE_APIS.findIndex(x => x === 'vertexai')), 'V'),
+                    new SlashCommandEnumValue('siliconflow', 'SiliconFlow', enumTypes.getBasedOnIndex(UNIQUE_APIS.findIndex(x => x === 'siliconflow')), 'S'),
                     new SlashCommandEnumValue('kobold', 'KoboldAI Classic', enumTypes.getBasedOnIndex(UNIQUE_APIS.findIndex(x => x === 'kobold')), 'K'),
-                    ...Object.values(textgen_types).map(api => new SlashCommandEnumValue(api, null, enumTypes.getBasedOnIndex(UNIQUE_APIS.findIndex(x => x === 'textgenerationwebui')), 'T')),
+                    ...Object.values(textgen_types).filter(api => Object.keys(SERVER_INPUTS).includes(api)).map(api => new SlashCommandEnumValue(api, null, enumTypes.getBasedOnIndex(UNIQUE_APIS.findIndex(x => x === 'textgenerationwebui')), 'T')),
                 ],
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'connect',
-                description: 'Whether to auto-connect to the API after setting the URL',
+                description: t`Whether to auto-connect to the API after setting the URL`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'true',
                 enumList: commonEnumProviders.boolean('trueFalse')(),
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'quiet',
-                description: 'suppress the toast message on API change',
+                description: t`suppress the toast message on API change`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 enumList: commonEnumProviders.boolean('trueFalse')(),
@@ -2576,31 +3154,29 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'API url to connect to',
+                description: t`API url to connect to`,
                 typeList: [ARGUMENT_TYPE.STRING],
             }),
         ],
         helpString: `
             <div>
-                Set the API url / server url for the currently selected API, including the port. If no argument is provided, it will return the current API url.
+                ${t`Set the API URL / server URL / endpoint for the currently selected API, including the port. If no argument is provided, it will return the current API url.`}
             </div>
             <div>
-                If a manual API is provided to <b>set</b> the URL, make sure to set <code>connect=false</code>, as auto-connect only works for the currently selected API,
-                or consider switching to it with <code>/api</code> first.
+                ${t`If a manual API is provided to <b>set</b> the URL, make sure to set <code>connect=false</code>, as auto-connect only works for the currently selected API, or consider switching to it with <code>/api</code> first.`}
             </div>
             <div>
-                This slash command works for most of the Text Completion sources, KoboldAI Classic, and also Custom OpenAI compatible for the Chat Completion sources. If unsure which APIs are supported,
-                check the auto-completion of the optional <code>api</code> argument of this command.
+                ${t`This slash command works for most of the Text Completion sources, KoboldAI Classic, and also Custom OpenAI compatible, Z.AI, SiliconFlow, and Google Vertex AI for the Chat Completion sources. If unsure which APIs are supported, check the auto-completion of the optional <code>api</code> argument of this command.`}
             </div>
         `,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'tokenizer',
         callback: selectTokenizerCallback,
-        returns: 'current tokenizer',
+        returns: t`current tokenizer`,
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'tokenizer name',
+                description: t`tokenizer name`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumList: getAvailableTokenizers().map(tokenizer =>
                     new SlashCommandEnumValue(tokenizer.tokenizerKey, tokenizer.tokenizerName, enumTypes.enum, enumIcons.default)),
@@ -2608,10 +3184,10 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
             <div>
-                Selects tokenizer by name. Gets the current tokenizer if no name is provided.
+                ${t`Selects tokenizer by name. Gets the current tokenizer if no name is provided.`}
             </div>
             <div>
-                <strong>Available tokenizers:</strong>
+                <strong>${t`Available tokenizers:`}</strong>
                 <pre><code>${getAvailableTokenizers().map(t => t.tokenizerKey).join(', ')}</code></pre>
             </div>
         `,
@@ -2620,58 +3196,58 @@ export function initDefaultSlashCommands() {
         name: 'upper',
         aliases: ['uppercase', 'to-upper'],
         callback: (_, text) => typeof text === 'string' ? text.toUpperCase() : '',
-        returns: 'uppercase string',
+        returns: t`uppercase string`,
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text to affect', [ARGUMENT_TYPE.STRING], true, false,
+                t`text to affect`, [ARGUMENT_TYPE.STRING], true, false,
             ),
         ],
-        helpString: 'Converts the provided string to uppercase.',
+        helpString: t`Converts the provided string to uppercase.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'lower',
         aliases: ['lowercase', 'to-lower'],
         callback: (_, text) => typeof text === 'string' ? text.toLowerCase() : '',
-        returns: 'lowercase string',
+        returns: t`lowercase string`,
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text to affect', [ARGUMENT_TYPE.STRING], true, false,
+                t`text to affect`, [ARGUMENT_TYPE.STRING], true, false,
             ),
         ],
-        helpString: 'Converts the provided string to lowercase.',
+        helpString: t`Converts the provided string to lowercase.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'substr',
         aliases: ['substring'],
         callback: (arg, text) => typeof text === 'string' ? text.slice(...[Number(arg.start), arg.end && Number(arg.end)]) : '',
-        returns: 'substring',
+        returns: t`substring`,
         namedArgumentList: [
             new SlashCommandNamedArgument(
-                'start', 'start index', [ARGUMENT_TYPE.NUMBER], false, false,
+                'start', t`start index`, [ARGUMENT_TYPE.NUMBER], false, false,
             ),
             new SlashCommandNamedArgument(
-                'end', 'end index', [ARGUMENT_TYPE.NUMBER], false, false,
+                'end', t`end index`, [ARGUMENT_TYPE.NUMBER], false, false,
             ),
         ],
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text to affect', [ARGUMENT_TYPE.STRING], true, false,
+                t`text to affect`, [ARGUMENT_TYPE.STRING], true, false,
             ),
         ],
         helpString: `
             <div>
-                Extracts text from the provided string.
+                ${t`Extracts text from the provided string.`}
             </div>
             <div>
-                If <code>start</code> is omitted, it's treated as 0.<br />
-                If <code>start</code> < 0, the index is counted from the end of the string.<br />
-                If <code>start</code> >= the string's length, an empty string is returned.<br />
-                If <code>end</code> is omitted, or if <code>end</code> >= the string's length, extracts to the end of the string.<br />
-                If <code>end</code> < 0, the index is counted from the end of the string.<br />
-                If <code>end</code> <= <code>start</code> after normalizing negative values, an empty string is returned.
+                ${t`If <code>start</code> is omitted, it's treated as 0.<br />`}
+                ${t`If <code>start</code> < 0, the index is counted from the end of the string.<br />`}
+                ${t`If <code>start</code> >= the string's length, an empty string is returned.<br />`}
+                ${t`If <code>end</code> is omitted, or if <code>end</code> >= the string's length, extracts to the end of the string.<br />`}
+                ${t`If <code>end</code> < 0, the index is counted from the end of the string.<br />`}
+                ${t`If <code>end</code> <= <code>start</code> after normalizing negative values, an empty string is returned.`}
             </div>
             <div>
-                <strong>Example:</strong>
+                <strong>${t`Example:`}</strong>
                 <pre>/let x The morning is upon us.     ||                                     </pre>
                 <pre>/substr start=-3 {{var::x}}         | /echo  |/# us.                    ||</pre>
                 <pre>/substr start=-3 end=-1 {{var::x}}  | /echo  |/# us                     ||</pre>
@@ -2684,11 +3260,11 @@ export function initDefaultSlashCommands() {
         name: 'is-mobile',
         callback: () => String(isMobile()),
         returns: ARGUMENT_TYPE.BOOLEAN,
-        helpString: 'Returns true if the current device is a mobile device, false otherwise. Equivalent to <code>{{isMobile}}</code> macro.',
+        helpString: t`Returns true if the current device is a mobile device, false otherwise. Equivalent to <code>{{isMobile}}</code> macro.`,
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'chat-render',
-        helpString: 'Renders a specified number of messages into the chat window. Displays all messages if no argument is provided.',
+        helpString: t`Renders a specified number of messages into the chat window. Displays all messages if no argument is provided.`,
         callback: async (args, number) => {
             await showMoreMessages(number && !isNaN(Number(number)) ? Number(number) : Number.MAX_SAFE_INTEGER);
             if (isTrueBoolean(String(args?.scroll ?? ''))) {
@@ -2699,7 +3275,7 @@ export function initDefaultSlashCommands() {
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'scroll',
-                description: 'scroll to the top after rendering',
+                description: t`scroll to the top after rendering`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 enumList: commonEnumProviders.boolean('trueFalse')(),
@@ -2707,13 +3283,13 @@ export function initDefaultSlashCommands() {
         ],
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'number of messages', [ARGUMENT_TYPE.NUMBER], false,
+                t`number of messages`, [ARGUMENT_TYPE.NUMBER], false,
             ),
         ],
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'chat-reload',
-        helpString: 'Reloads the current chat.',
+        helpString: t`Reloads the current chat.`,
         callback: async () => {
             await reloadCurrentChat();
             return '';
@@ -2724,7 +3300,7 @@ export function initDefaultSlashCommands() {
         aliases: ['re'],
         callback: (async ({ mode = 'literal', pattern, replacer = '' }, text) => {
             if (!pattern) {
-                throw new Error('Argument of \'pattern=\' cannot be empty');
+                throw new Error(t`Argument of 'pattern=' cannot be empty`);
             }
             text = text.toString();
             pattern = pattern.toString();
@@ -2735,42 +3311,42 @@ export function initDefaultSlashCommands() {
                 case 'regex':
                     return text.replace(regexFromString(pattern), replacer);
                 default:
-                    throw new Error('Invalid \'/replace mode=\' argument specified!');
+                    throw new Error(t`Invalid '/replace mode=' argument specified!`);
             }
         }),
-        returns: 'replaced text',
+        returns: t`replaced text`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'mode',
-                description: 'Replaces occurrence(s) of a pattern',
+                description: t`Replaces occurrence(s) of a pattern`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'literal',
                 enumList: ['literal', 'regex'],
             }),
             new SlashCommandNamedArgument(
-                'pattern', 'pattern to search with', [ARGUMENT_TYPE.STRING], true, false,
+                'pattern', t`pattern to search with`, [ARGUMENT_TYPE.STRING], true, false,
             ),
             new SlashCommandNamedArgument(
-                'replacer', 'replacement text for matches', [ARGUMENT_TYPE.STRING], false, false, '',
+                'replacer', t`replacement text for matches`, [ARGUMENT_TYPE.STRING], false, false, '',
             ),
         ],
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text to affect', [ARGUMENT_TYPE.STRING], true, false,
+                t`text to affect`, [ARGUMENT_TYPE.STRING], true, false,
             ),
         ],
         helpString: `
             <div>
-                Replaces text within the provided string based on the pattern.
+                ${t`Replaces text within the provided string based on the pattern.`}
             </div>
             <div>
-                If <code>mode</code> is <code>literal</code> (or omitted), <code>pattern</code> is a literal search string (case-sensitive).<br />
-                If <code>mode</code> is <code>regex</code>, <code>pattern</code> is parsed as an ECMAScript Regular Expression.<br />
-                The <code>replacer</code> replaces based on the <code>pattern</code> in the input text.<br />
-                If <code>replacer</code> is omitted, the replacement(s) will be an empty string.<br />
+                ${t`If <code>mode</code> is <code>literal</code> (or omitted), <code>pattern</code> is a literal search string (case-sensitive).<br />`}
+                ${t`If <code>mode</code> is <code>regex</code>, <code>pattern</code> is parsed as an ECMAScript Regular Expression.<br />`}
+                ${t`The <code>replacer</code> replaces based on the <code>pattern</code> in the input text.<br />`}
+                ${t`If <code>replacer</code> is omitted, the replacement(s) will be an empty string.<br />`}
             </div>
             <div>
-                <strong>Example:</strong>
+                <strong>${t`Example:`}</strong>
                 <pre><code class="language-stscript">/let x Blue house and blue car ||                                                                        </code></pre>
                 <pre><code class="language-stscript">/replace pattern="blue" {{var::x}}                                | /echo  |/# Blue house and  car     ||</code></pre>
                 <pre><code class="language-stscript">/replace pattern="blue" replacer="red" {{var::x}}                 | /echo  |/# Blue house and red car  ||</code></pre>
@@ -2783,34 +3359,34 @@ export function initDefaultSlashCommands() {
         name: 'test',
         callback: (({ pattern }, text) => {
             if (!pattern) {
-                throw new Error('Argument of \'pattern=\' cannot be empty');
+                throw new Error(t`Argument of 'pattern=' cannot be empty`);
             }
             const re = regexFromString(pattern.toString());
             if (!re) {
-                throw new Error('The value of \'pattern\' argument is not a valid regular expression.');
+                throw new Error(t`The value of 'pattern' argument is not a valid regular expression.`);
             }
             return JSON.stringify(re.test(text.toString()));
         }),
         returns: 'true | false',
         namedArgumentList: [
             new SlashCommandNamedArgument(
-                'pattern', 'pattern to find', [ARGUMENT_TYPE.STRING], true, false,
+                'pattern', t`pattern to find`, [ARGUMENT_TYPE.STRING], true, false,
             ),
         ],
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text to test', [ARGUMENT_TYPE.STRING], true, false,
+                t`text to test`, [ARGUMENT_TYPE.STRING], true, false,
             ),
         ],
         helpString: `
             <div>
-                Tests text for a regular expression match.
+                ${t`Tests text for a regular expression match.`}
             </div>
             <div>
-                Returns <code>true</code> if the match is found, <code>false</code> otherwise.
+                ${t`Returns <code>true</code> if the match is found, <code>false</code> otherwise.`}
             </div>
             <div>
-                <strong>Example:</strong>
+                <strong>${t`Example:`}</strong>
                 <pre><code class="language-stscript">/let x Blue house and green car                         ||</code></pre>
                 <pre><code class="language-stscript">/test pattern="green" {{var::x}}    | /echo  |/# true   ||</code></pre>
                 <pre><code class="language-stscript">/test pattern="blue" {{var::x}}     | /echo  |/# false  ||</code></pre>
@@ -2822,11 +3398,11 @@ export function initDefaultSlashCommands() {
         name: 'match',
         callback: (({ pattern }, text) => {
             if (!pattern) {
-                throw new Error('Argument of \'pattern=\' cannot be empty');
+                throw new Error(t`Argument of 'pattern=' cannot be empty`);
             }
             const re = regexFromString(pattern.toString());
             if (!re) {
-                throw new Error('The value of \'pattern\' argument is not a valid regular expression.');
+                throw new Error(t`The value of 'pattern' argument is not a valid regular expression.`);
             }
             if (re.flags.includes('g')) {
                 return JSON.stringify([...text.toString().matchAll(re)]);
@@ -2835,28 +3411,26 @@ export function initDefaultSlashCommands() {
                 return match ? JSON.stringify(match) : '';
             }
         }),
-        returns: 'group array for each match',
+        returns: t`group array for each match`,
         namedArgumentList: [
             new SlashCommandNamedArgument(
-                'pattern', 'pattern to find', [ARGUMENT_TYPE.STRING], true, false,
+                'pattern', t`pattern to find`, [ARGUMENT_TYPE.STRING], true, false,
             ),
         ],
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'text to match against', [ARGUMENT_TYPE.STRING], true, false,
+                t`text to match against`, [ARGUMENT_TYPE.STRING], true, false,
             ),
         ],
         helpString: `
             <div>
-                Retrieves regular expression matches in the given text
+                ${t`Retrieves regular expression matches in the given text`}
             </div>
             <div>
-                Returns an array of groups (with the first group being the full match). If the regex contains the global flag (i.e. <code>/g</code>),
-                multiple nested arrays are returned for each match. If the regex is global, returns <code>[]</code> if no matches are found,
-                otherwise it returns an empty string.
+                ${t`Returns an array of groups (with the first group being the full match). If the regex contains the global flag (i.e. <code>/g</code>), multiple nested arrays are returned for each match. If the regex is global, returns <code>[]</code> if no matches are found, otherwise it returns an empty string.`}
             </div>
             <div>
-                <strong>Example:</strong>
+                <strong>${t`Example:`}</strong>
                 <pre><code class="language-stscript">/let x color_green green lamp color_blue                                                                            ||</code></pre>
                 <pre><code class="language-stscript">/match pattern="green" {{var::x}}            | /echo  |/# [ "green" ]                                               ||</code></pre>
                 <pre><code class="language-stscript">/match pattern="color_(\\w+)" {{var::x}}      | /echo  |/# [ "color_green", "green" ]                                ||</code></pre>
@@ -2884,7 +3458,7 @@ export function initDefaultSlashCommands() {
             if (isFinite(firstDisplayedMessageId) && messageIndex < firstDisplayedMessageId) {
                 const needToLoadCount = firstDisplayedMessageId - messageIndex;
                 await showMoreMessages(needToLoadCount);
-                await delay(1);
+                await delay(debounce_timeout.quick);
             }
 
             const chatContainer = document.getElementById('chat');
@@ -2910,7 +3484,7 @@ export function initDefaultSlashCommands() {
         },
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'The message index (0-based) to scroll to.',
+                description: t`The message index (0-based) to scroll to.`,
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 isRequired: true,
                 enumProvider: commonEnumProviders.messages(),
@@ -2918,34 +3492,33 @@ export function initDefaultSlashCommands() {
         ],
         helpString: `
         <div>
-            Scrolls the chat view to the specified message index. Index starts at 0.
+            ${t`Scrolls the chat view to the specified message index. Index starts at 0.`}
         </div>
         <div>
-            <strong>Example:</strong> <pre><code>/chat-jump 10</code></pre> Scrolls to the 11th message (id=10).
+            <strong>${t`Example:`}</strong> <pre><code>/chat-jump 10</code></pre> ${t`Scrolls to the 11th message (id=10).`}
         </div>
     `,
     }));
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'clipboard-get',
-        returns: 'clipboard text',
+        returns: t`clipboard text`,
         callback: async () => {
             if (!navigator.clipboard) {
-                toastr.warning('Clipboard API not available in this context.');
+                toastr.warning(t`Clipboard API not available in this context.`);
                 return '';
             }
 
             try {
                 const text = await navigator.clipboard.readText();
                 return text;
-            }
-            catch (error) {
+            } catch (error) {
                 console.error('Error reading clipboard:', error);
-                toastr.warning('Failed to read clipboard text. Have you granted the permission?');
+                toastr.warning(t`Failed to read clipboard text. Have you granted the permission?`);
                 return '';
             }
         },
-        helpString: 'Retrieves the text from the OS clipboard. Only works in secure contexts (HTTPS or localhost). Browser may ask for permission.',
+        helpString: t`Retrieves the text from the OS clipboard. Only works in secure contexts (HTTPS or localhost). Browser may ask for permission.`,
     }));
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
@@ -2956,13 +3529,13 @@ export function initDefaultSlashCommands() {
         },
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'text to copy to the clipboard',
+                description: t`text to copy to the clipboard`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 acceptsMultiple: false,
             }),
         ],
-        helpString: 'Copies the provided text to the OS clipboard. Returns an empty string.',
+        helpString: t`Copies the provided text to the OS clipboard. Returns an empty string.`,
     }));
 
 
@@ -2974,10 +3547,10 @@ export function initDefaultSlashCommands() {
         aliases: ['ppp'],
         helpString: `
             <div>
-                Sets a "Prompt Post-Processing" type. Gets the current selection if no value is provided.
+                ${t`Sets a "Prompt Post-Processing" type. Gets the current selection if no value is provided.`}
             </div>
             <div>
-                <strong>Examples:</strong>
+                <strong>${t`Examples:`}</strong>
             </div>
             <ul>
                 <li><pre><code class="language-stscript">/prompt-post-processing | /echo</code></pre></li>
@@ -2987,7 +3560,7 @@ export function initDefaultSlashCommands() {
         namedArgumentList: [],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'value',
+                description: t`value`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 acceptsMultiple: false,
                 isRequired: true,
@@ -3003,7 +3576,7 @@ export function initDefaultSlashCommands() {
 
             const validValues = promptPostProcessingEnumProvider().map(option => option.value);
             if (!validValues.includes(stringValue)) {
-                throw new Error(`Invalid value "${stringValue}". Valid values are: ${validValues.join(', ')}`);
+                throw new Error(t`Invalid value "${stringValue}". Valid values are: ${validValues.join(', ')}`);
             }
 
             // 'none' value must be coerced to an empty string
@@ -3015,7 +3588,179 @@ export function initDefaultSlashCommands() {
         },
     }));
 
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'reroll-pick',
+        callback: (_, value) => {
+            const currentSeed = chat_metadata.pick_reroll_seed ?? 0;
+            const parsedValue = value ? parseInt(String(value), 10) : NaN;
+
+            if (!isNaN(parsedValue)) {
+                chat_metadata.pick_reroll_seed = parsedValue;
+            } else {
+                chat_metadata.pick_reroll_seed = currentSeed + 1;
+            }
+
+            saveMetadataDebounced();
+            return String(chat_metadata.pick_reroll_seed);
+        },
+        returns: t`The new reroll seed value.`,
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: t`Optional seed value to set. If not provided, increments current seed by 1.`,
+                typeList: [ARGUMENT_TYPE.NUMBER],
+            }),
+        ],
+        helpString: `
+            <div>
+                ${t`Rerolls all <code>{{pick}}</code> macro choices in the current chat.`}
+            </div>
+            <div>
+                ${t`The <code>{{pick}}</code> macro normally keeps stable choices per chat. This command changes the seed used for all picks, causing them to resolve to (possibly) different values.`}
+            </div>
+            <div>
+                ${t`If a number is provided, sets the seed to that value. Otherwise, increments the current seed by 1.`}
+            </div>
+            <div>
+                <strong>${t`Example:`}</strong>
+                <ul>
+                    <li><pre><code>/reroll-pick</code></pre> ${t`Increments the seed by 1.`}</li>
+                    <li><pre><code>/reroll-pick 5</code></pre> ${t`Sets the seed to 5.`}</li>
+                </ul>
+            </div>
+        `,
+    }));
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'beep',
+        aliases: ['ding'],
+        returns: t`an empty string`,
+        callback: async () => {
+            playMessageSound({ force: true });
+            return '';
+        },
+        helpString: t`Plays the message received sound effect.`,
+    }));
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'array-wrap',
+        aliases: ['list-wrap'],
+        returns: t`unnamed argument value wrapped into an array`,
+        helpString: t`Wraps a single unnamed argument into an array if it's not already an array. If the value is an empty string, returns an empty array.`,
+        namedArgumentList: [
+            SlashCommandNamedArgument.fromProps({
+                name: 'stringify',
+                description: t`Whether JSON primitives (numbers, booleans, nulls) should be treated as strings, i.e. ["null"] when stringify=true vs. [null] when stringify=false.`,
+                typeList: [ARGUMENT_TYPE.BOOLEAN],
+                defaultValue: 'true',
+                enumList: commonEnumProviders.boolean('trueFalse')(),
+            }),
+        ],
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: t`value`,
+                acceptsMultiple: false,
+                isRequired: true,
+                typeList: [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.DICTIONARY, ARGUMENT_TYPE.BOOLEAN, ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.LIST],
+            }),
+        ],
+        callback: (args, value) => {
+            // Closures are not supported
+            if (value instanceof SlashCommandClosure) {
+                throw new SlashCommandExecutionError(t`Closures are not supported as unnamed arguments for /array-wrap. Did you forget to call the closure with parentheses?`);
+            }
+
+            // Multiple unnamed arguments are not supported since acceptsMultiple is false, but check just in case
+            if (Array.isArray(value)) {
+                throw new SlashCommandExecutionError(t`/array-wrap does not support multiple unnamed arguments.`);
+            }
+
+            // Empty string - empty arrays
+            if (value === '') {
+                return JSON.stringify([]);
+            }
+
+            try {
+                // If the value is a valid JSON string, parse it
+                const parsedValue = JSON.parse(value);
+
+                // Already an array - return as-is
+                if (Array.isArray(parsedValue)) {
+                    return value;
+                }
+
+                // If it's an object, wrap it into an array and stringify
+                if (typeof parsedValue === 'object' && parsedValue !== null) {
+                    return JSON.stringify([parsedValue]);
+                }
+
+                // For primitive values, check if we should take the parsed or original value based on the stringify argument
+                const isJsonPrimitive = parsedValue === null || ['string', 'number', 'boolean'].includes(typeof parsedValue);
+                if (isJsonPrimitive && isFalseBoolean(String(args?.stringify?.toString()))) {
+                    return JSON.stringify([parsedValue]);
+                }
+
+                // Wrap the original value (string, number, boolean) into an array, preserving quotes for strings
+                return JSON.stringify([value]);
+            } catch {
+                // Not a valid JSON string - wrap the original value
+                return JSON.stringify([value]);
+            }
+        },
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'array-unwrap',
+        aliases: ['list-unwrap'],
+        returns: t`unnamed argument value unwrapped from an array`,
+        helpString: t`Unwraps the first element of an array provided as an unnamed argument. If the value is not an array, returns the value as-is. If the array is empty, returns an empty string.`,
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: t`value`,
+                acceptsMultiple: false,
+                isRequired: true,
+                typeList: [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.DICTIONARY, ARGUMENT_TYPE.BOOLEAN, ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.LIST],
+            }),
+        ],
+        callback: (_args, value) => {
+            // Closures are not supported
+            if (value instanceof SlashCommandClosure) {
+                throw new SlashCommandExecutionError(t`Closures are not supported as unnamed arguments for /array-unwrap. Did you forget to call the closure with parentheses?`);
+            }
+
+            // Multiple unnamed arguments are not supported since acceptsMultiple is false, but check just in case
+            if (Array.isArray(value)) {
+                throw new SlashCommandExecutionError(t`/array-unwrap does not support multiple unnamed arguments.`);
+            }
+
+            try {
+                // If the value is a JSON array, get the first element
+                const parsed = JSON.parse(value);
+
+                if (Array.isArray(parsed)) {
+                    const unwrappedValue = parsed?.[0] ?? '';
+
+                    // If the first element is null or undefined, return an empty string
+                    if (unwrappedValue === null || unwrappedValue === undefined) {
+                        return '';
+                    }
+
+                    // If the first element is an object, stringify it.
+                    if (typeof unwrappedValue === 'object') {
+                        return JSON.stringify(unwrappedValue);
+                    }
+
+                    // Otherwise, return it as a string.
+                    return String(unwrappedValue);
+                }
+                return value;
+            } catch {
+                // Not a valid JSON - return as-is
+                return value;
+            }
+        },
+    }));
+
     registerVariableCommands();
+    registerActionLoaderSlashCommands();
 }
 
 const NARRATOR_NAME_KEY = 'narrator_name';
@@ -3056,9 +3801,8 @@ function injectCallback(args, value) {
     const filter = args?.filter instanceof SlashCommandClosure ? args.filter.rawText : null;
     const filterFunction = args?.filter instanceof SlashCommandClosure ? closureToFilter(args.filter) : null;
     value = value || '';
-
     if (args?.filter && !String(filter ?? '').trim()) {
-        throw new Error('Failed to parse the filter argument. Make sure it is a valid non-empty closure.');
+        throw new Error(t`Failed to parse the filter argument. Make sure it is a valid non-empty closure.`);
     }
 
     const prefixedId = `${SCRIPT_PROMPT_KEY}${id}`;
@@ -3100,37 +3844,16 @@ async function listInjectsCallback(args) {
     /** @type {import('./slash-commands/SlashCommandReturnHelper.js').SlashCommandReturnType} */
     let returnType = args.return;
 
-    // Old legacy return type handling
-    if (args.format) {
-        toastr.warning(`Legacy argument 'format' with value '${args.format}' is deprecated. Please use 'return' instead. Routing to the correct return type...`, 'Deprecation warning');
-        const type = String(args?.format).toLowerCase().trim();
-        if (!chat_metadata.script_injects || !Object.keys(chat_metadata.script_injects).length) {
-            type !== 'none' && toastr.info('No script injections for the current chat');
-        }
-        switch (type) {
-            case 'none':
-                returnType = 'none';
-                break;
-            case 'chat':
-                returnType = 'chat-html';
-                break;
-            case 'popup':
-            default:
-                returnType = 'popup-html';
-                break;
-        }
-    }
-
     // Now the actual new return type handling
     const buildTextValue = (injects) => {
         const injectsStr = Object.entries(injects)
             .map(([id, inject]) => {
                 const position = Object.entries(extension_prompt_types);
-                const positionName = position.find(([_, value]) => value === inject.position)?.[0] ?? 'unknown';
-                return `* **${id}**: <code>${inject.value}</code> (${positionName}, depth: ${inject.depth}, scan: ${inject.scan ?? false}, role: ${inject.role ?? extension_prompt_roles.SYSTEM})`;
+                const positionName = position.find(([_, value]) => value === inject.position)?.[0] ?? t`unknown`;
+                return `* **${id}**: <code>${inject.value}</code> (${positionName}, ${t`depth`}: ${inject.depth}, ${t`scan`}: ${inject.scan ?? false}, ${t`role`}: ${inject.role ?? extension_prompt_roles.SYSTEM})`;
             })
             .join('\n');
-        return `### Script injections:\n${injectsStr || 'No script injections for the current chat'}`;
+        return `### ${t`Script injections:`}\n${injectsStr || t`No script injections for the current chat`}`;
     };
 
     return await slashCommandReturnHelper.doReturn(returnType ?? 'popup-html', chat_metadata.script_injects ?? {}, { objectToStringFunc: buildTextValue });
@@ -3275,10 +3998,15 @@ async function trimTokensCallback(arg, value) {
 }
 
 /**
- * Displays a popup with buttons based on provided labels and handles button interactions.
- *
+ * @typedef {object} ButtonLabel
+ * @property {string} text - The button text
+ * @property {string} [tooltip] - Optional tooltip text
+ * @property {string} [icon] - Optional Font Awesome icon class (e.g., 'fa-floppy-disk')
+ */
+
+/**
  * @param {object} args - Named arguments for the command
- * @param {string} args.labels - JSON string of an array of button labels
+ * @param {string} args.labels - JSON string of an array of button labels (strings or ButtonLabel objects)
  * @param {string} [args.multiple=false] - Flag indicating if multiple buttons can be toggled
  * @param {string} text - The text content to be displayed within the popup
  *
@@ -3288,11 +4016,21 @@ async function trimTokensCallback(arg, value) {
  */
 async function buttonsCallback(args, text) {
     try {
-        /** @type {string[]} */
-        const buttons = JSON.parse(resolveVariable(args?.labels));
+        /** @type {(string|ButtonLabel)[]} */
+        const rawButtons = JSON.parse(resolveVariable(args?.labels));
 
-        if (!Array.isArray(buttons) || !buttons.length) {
+        if (!Array.isArray(rawButtons) || !rawButtons.length) {
             console.warn('WARN: Invalid labels provided for /buttons command');
+            return '';
+        }
+
+        // Normalize buttons to ButtonLabel format for consistent handling
+        /** @type {ButtonLabel[]} */
+        const buttons = rawButtons.map(btn => typeof btn === 'string' ? { text: btn } : btn);
+
+        // Validate raw buttons: each entry must be a string or a non-null object with a string `text` field that has content
+        if (!buttons.every(btn => typeof btn === 'object' && btn !== null && typeof btn.text === 'string' && btn.text)) {
+            console.warn('WARN: Invalid button label entry provided for /buttons command: each entry must be a string or an object with a "text" property');
             return '';
         }
 
@@ -3301,6 +4039,7 @@ async function buttonsCallback(args, text) {
         const multiple = isTrueBoolean(args?.multiple);
 
         // Map custom buttons to results. Start at 2 because 1 and 0 are reserved for ok and cancel
+        /** @type {Map<number, ButtonLabel>} */
         const resultToButtonMap = new Map(buttons.map((button, index) => [index + 2, button]));
 
         return new Promise(async (resolve) => {
@@ -3335,7 +4074,25 @@ async function buttonsCallback(args, text) {
                     buttonElement.dataset.result = String(result);
                 }
 
-                buttonElement.innerText = button;
+                // Add icon if provided
+                if (button.icon) {
+                    const icon = document.createElement('i');
+                    icon.className = `fa-solid ${button.icon}`;
+                    icon.style.marginRight = '0.5em';
+                    buttonElement.appendChild(icon);
+                    const textSpan = document.createElement('span');
+                    textSpan.textContent = button.text;
+                    buttonElement.appendChild(textSpan);
+                } else {
+                    buttonElement.innerText = button.text;
+                }
+
+                // Add tooltip if provided
+                if (button.tooltip) {
+                    buttonElement.title = button.tooltip;
+                    buttonElement.dataset.i18n = '[title]' + button.tooltip;
+                }
+
                 buttonContainer.appendChild(buttonElement);
             }
 
@@ -3358,10 +4115,10 @@ async function buttonsCallback(args, text) {
             /** @returns {string} @param {string|number|boolean} result */
             function getResult(result) {
                 if (multiple) {
-                    const array = result === POPUP_RESULT.AFFIRMATIVE ? Array.from(multipleToggledState).map(r => resultToButtonMap.get(r) ?? '') : [];
+                    const array = result === POPUP_RESULT.AFFIRMATIVE ? Array.from(multipleToggledState).map(r => resultToButtonMap.get(r)?.text ?? '') : [];
                     return JSON.stringify(array);
                 }
-                return typeof result === 'number' ? resultToButtonMap.get(result) ?? '' : '';
+                return typeof result === 'number' ? resultToButtonMap.get(result)?.text ?? '' : '';
             }
         });
     } catch {
@@ -3381,8 +4138,9 @@ async function popupCallback(args, value) {
         wide: isTrueBoolean(args?.wide),
         wider: isTrueBoolean(args?.wider),
         transparent: isTrueBoolean(args?.transparent),
-        okButton: args?.okButton !== undefined && typeof args?.okButton === 'string' ? args.okButton : 'Ok',
+        okButton: args?.okButton !== undefined && typeof args?.okButton === 'string' ? args.okButton : t`OK`,
         cancelButton: args?.cancelButton !== undefined && typeof args?.cancelButton === 'string' ? args.cancelButton : null,
+        tooltip: args?.tooltip !== undefined && typeof args?.tooltip === 'string' ? args.tooltip : null,
     };
     const result = await Popup.show.text(safeHeader, safeBody, popupOptions);
     return String(requestedResult ? result ?? '' : value);
@@ -3418,7 +4176,7 @@ async function getMessagesCallback(args, value) {
             return !isNarrator && mes.is_user;
         }
 
-        throw new Error(`Invalid role provided. Expected one of: system, assistant, user. Got: ${role}`);
+        throw new Error(t`Invalid role provided. Expected one of: system, assistant, user. Got: ${role}`);
     };
 
     const processMessage = async (mesId) => {
@@ -3453,7 +4211,7 @@ async function getMessagesCallback(args, value) {
 
 async function runCallback(args, name) {
     if (!name) {
-        throw new Error('No name provided for /run command');
+        throw new Error(t`No name provided for /run command`);
     }
 
     if (name instanceof SlashCommandClosure) {
@@ -3466,7 +4224,7 @@ async function runCallback(args, name) {
     if (scope.existsVariable(name)) {
         const closure = scope.getVariable(name);
         if (!(closure instanceof SlashCommandClosure)) {
-            throw new Error(`"${name}" is not callable.`);
+            throw new Error(t`"${name}" is not callable.`);
         }
         closure.scope.parent = scope;
         closure.breakController = new SlashCommandBreakController();
@@ -3486,8 +4244,8 @@ async function runCallback(args, name) {
         return result.pipe;
     }
 
-    if (typeof window['executeQuickReplyByName'] !== 'function') {
-        throw new Error('Quick Reply extension is not loaded');
+    if (typeof globalThis.executeQuickReplyByName !== 'function') {
+        throw new Error(t`Quick Reply extension is not loaded`);
     }
 
     try {
@@ -3497,9 +4255,9 @@ async function runCallback(args, name) {
             abortController: args._abortController,
             debugController: args._debugController,
         };
-        return await window['executeQuickReplyByName'](name, args, options);
+        return await globalThis.executeQuickReplyByName(name, args, options);
     } catch (error) {
-        throw new Error(`Error running Quick Reply "${name}": ${error.message}`);
+        throw new Error(t`Error running Quick Reply "${name}": ${error.message}`);
     }
 }
 
@@ -3509,8 +4267,8 @@ async function runCallback(args, name) {
  * @param {string} [reason]
  */
 function abortCallback({ _abortController, quiet }, reason) {
-    if (quiet instanceof SlashCommandClosure) throw new Error('argument \'quiet\' cannot be a closure for command /abort');
-    _abortController.abort((reason ?? '').toString().length == 0 ? '/abort command executed' : reason, !isFalseBoolean(quiet?.toString() ?? 'true'));
+    if (quiet instanceof SlashCommandClosure) throw new Error(t`argument 'quiet' cannot be a closure for command /abort`);
+    _abortController.abort((reason ?? '').toString().length == 0 ? t`/abort command executed` : reason, !isFalseBoolean(quiet?.toString() ?? 'true'));
     return '';
 }
 
@@ -3536,8 +4294,10 @@ async function inputCallback(args, prompt) {
     const popupOptions = {
         large: isTrueBoolean(args?.large),
         wide: isTrueBoolean(args?.wide),
-        okButton: args?.okButton !== undefined && typeof args?.okButton === 'string' ? args.okButton : 'Ok',
+        okButton: args?.okButton !== undefined && typeof args?.okButton === 'string' ? args.okButton : t`Ok`,
         rows: args?.rows !== undefined && typeof args?.rows === 'string' ? isNaN(Number(args.rows)) ? 4 : Number(args.rows) : 4,
+        placeholder: args?.placeholder !== undefined && typeof args?.placeholder === 'string' ? args.placeholder : null,
+        tooltip: args?.tooltip !== undefined && typeof args?.tooltip === 'string' ? args.tooltip : null,
     };
     // Do not remove this delay, otherwise the prompt will not show up
     await delay(1);
@@ -3549,7 +4309,7 @@ async function inputCallback(args, prompt) {
         // Veryify if a cancel handler exists and it is valid
         if (args?.onCancel) {
             if (!(args.onCancel instanceof SlashCommandClosure)) {
-                throw new Error('argument \'onCancel\' must be a closure for command /input');
+                throw new Error(t`argument 'onCancel' must be a closure for command /input`);
             }
             await args.onCancel.execute();
         }
@@ -3557,7 +4317,7 @@ async function inputCallback(args, prompt) {
         // Verify if an ok handler exists and it is valid
         if (args?.onSuccess) {
             if (!(args.onSuccess instanceof SlashCommandClosure)) {
-                throw new Error('argument \'onSuccess\' must be a closure for command /input');
+                throw new Error(t`argument 'onSuccess' must be a closure for command /input`);
             }
             await args.onSuccess.execute();
         }
@@ -3705,7 +4465,7 @@ async function generateRawCallback(args, value) {
         return result;
     } catch (err) {
         console.error('Error on /genraw generation', err);
-        toastr.error(err.message, 'API Error', { preventDuplicates: true });
+        toastr.error(err.message, t`API Error`, { preventDuplicates: true });
     } finally {
         if (lock) {
             activateSendButtons();
@@ -3751,7 +4511,7 @@ async function generateCallback(args, value) {
         return result;
     } catch (err) {
         console.error('Error on /gen generation', err);
-        toastr.error(err.message, 'API Error', { preventDuplicates: true });
+        toastr.error(err.message, t`API Error`, { preventDuplicates: true });
     } finally {
         if (lock) {
             activateSendButtons();
@@ -3775,7 +4535,7 @@ async function echoCallback(args, value) {
     }
 
     if (args.severity && !['error', 'warning', 'success', 'info'].includes(args.severity)) {
-        toastr.warning(`Invalid severity provided for /echo command: ${args.severity}`);
+        toastr.warning(t`Invalid severity provided for /echo command: ${args.severity}`);
         args.severity = null;
     }
 
@@ -3790,7 +4550,7 @@ async function echoCallback(args, value) {
     if (args.timeout && !isNaN(parseInt(args.timeout))) options.timeOut = parseInt(args.timeout);
     if (args.extendedTimeout && !isNaN(parseInt(args.extendedTimeout))) options.extendedTimeOut = parseInt(args.extendedTimeout);
     if (isTrueBoolean(args.preventDuplicates)) options.preventDuplicates = true;
-    if (args.cssClass) options.toastClass = args.cssClass;
+    if (args.cssClass) options.toastClass = [options.toastClass, args.cssClass].filter(Boolean).join(' ');
     options.escapeHtml = args.escapeHtml !== undefined ? isTrueBoolean(args.escapeHtml) : true;
 
     // Prepare possible await handling
@@ -3808,7 +4568,7 @@ async function echoCallback(args, value) {
                 await args.onClick.execute();
             };
         } else {
-            toastr.warning('Invalid onClick provided for /echo command. This is not a closure');
+            toastr.warning(t`Invalid onClick provided for /echo command. This is not a closure`);
         }
     }
 
@@ -3856,7 +4616,7 @@ async function addSwipeCallback(args, value) {
     const lastMessage = chat[chat.length - 1];
 
     if (!lastMessage) {
-        toastr.warning('No messages to add swipes to.');
+        toastr.warning(t`No messages to add swipes to.`);
         return '';
     }
 
@@ -3866,17 +4626,12 @@ async function addSwipeCallback(args, value) {
     }
 
     if (lastMessage.is_user) {
-        toastr.warning('Can\'t add swipes to user messages.');
+        toastr.warning(t`Can't add swipes to user messages.`);
         return '';
     }
 
     if (lastMessage.is_system) {
-        toastr.warning('Can\'t add swipes to system messages.');
-        return '';
-    }
-
-    if (lastMessage.extra?.image) {
-        toastr.warning('Can\'t add swipes to message containing an image.');
+        toastr.warning(t`Can't add swipes to system messages.`);
         return '';
     }
 
@@ -3934,12 +4689,12 @@ async function askCharacter(args, text) {
     // Not supported in group chats
     // TODO: Maybe support group chats?
     if (selected_group) {
-        toastr.warning('Cannot run /ask command in a group chat!');
+        toastr.warning(t`Cannot run /ask command in a group chat!`);
         return '';
     }
 
     if (!args.name) {
-        toastr.warning('You must specify a name of the character to ask.');
+        toastr.warning(t`You must specify a name of the character to ask.`);
         return '';
     }
 
@@ -3948,7 +4703,7 @@ async function askCharacter(args, text) {
     // Find the character
     const character = findChar({ name: args?.name });
     if (!character) {
-        toastr.error('Character not found.');
+        toastr.error(t`Character not found.`);
         return '';
     }
 
@@ -3995,7 +4750,7 @@ async function askCharacter(args, text) {
     // Run generate and restore previous character
     try {
         eventSource.once(event_types.MESSAGE_RECEIVED, restoreCharacter);
-        toastr.info(`Asking ${name} something...`);
+        toastr.info(t`Asking ${name} something...`);
         askResult = await Generate('normal');
     } catch (error) {
         restoreCharacter();
@@ -4004,7 +4759,7 @@ async function askCharacter(args, text) {
         if (String(this_chid) === String(prevChId)) {
             await saveChatConditional();
         } else {
-            toastr.error('It is strongly recommended to reload the page.', 'Something went wrong');
+            toastr.error(t`It is strongly recommended to reload the page.`, t`Something went wrong`);
         }
     }
 
@@ -4073,7 +4828,7 @@ function performGroupMemberAction(chid, action) {
 
 async function disableGroupMemberCallback(_, arg) {
     if (!selected_group) {
-        toastr.warning('Cannot run /member-disable command outside of a group chat.');
+        toastr.warning(t`Cannot run /member-disable command outside of a group chat.`);
         return '';
     }
 
@@ -4090,7 +4845,7 @@ async function disableGroupMemberCallback(_, arg) {
 
 async function enableGroupMemberCallback(_, arg) {
     if (!selected_group) {
-        toastr.warning('Cannot run /member-enable command outside of a group chat.');
+        toastr.warning(t`Cannot run /member-enable command outside of a group chat.`);
         return '';
     }
 
@@ -4107,7 +4862,7 @@ async function enableGroupMemberCallback(_, arg) {
 
 async function moveGroupMemberUpCallback(_, arg) {
     if (!selected_group) {
-        toastr.warning('Cannot run /member-up command outside of a group chat.');
+        toastr.warning(t`Cannot run /member-up command outside of a group chat.`);
         return '';
     }
 
@@ -4124,7 +4879,7 @@ async function moveGroupMemberUpCallback(_, arg) {
 
 async function moveGroupMemberDownCallback(_, arg) {
     if (!selected_group) {
-        toastr.warning('Cannot run /member-down command outside of a group chat.');
+        toastr.warning(t`Cannot run /member-down command outside of a group chat.`);
         return '';
     }
 
@@ -4141,12 +4896,12 @@ async function moveGroupMemberDownCallback(_, arg) {
 
 async function peekCallback(_, arg) {
     if (!selected_group) {
-        toastr.warning('Cannot run /member-peek command outside of a group chat.');
+        toastr.warning(t`Cannot run /member-peek command outside of a group chat.`);
         return '';
     }
 
     if (is_group_generating) {
-        toastr.warning('Cannot run /member-peek command while the group reply is generating.');
+        toastr.warning(t`Cannot run /member-peek command while the group reply is generating.`);
         return '';
     }
 
@@ -4163,7 +4918,7 @@ async function peekCallback(_, arg) {
 
 async function countGroupMemberCallback() {
     if (!selected_group) {
-        toastr.warning('Cannot run /member-count command outside of a group chat.');
+        toastr.warning(t`Cannot run /member-count command outside of a group chat.`);
         return '';
     }
 
@@ -4172,7 +4927,7 @@ async function countGroupMemberCallback() {
 
 async function removeGroupMemberCallback(_, arg) {
     if (!selected_group) {
-        toastr.warning('Cannot run /member-remove command outside of a group chat.');
+        toastr.warning(t`Cannot run /member-remove command outside of a group chat.`);
         return '';
     }
 
@@ -4189,7 +4944,7 @@ async function removeGroupMemberCallback(_, arg) {
 
 async function addGroupMemberCallback(_, name) {
     if (!selected_group) {
-        toastr.warning('Cannot run /memberadd command outside of a group chat.');
+        toastr.warning(t`Cannot run /memberadd command outside of a group chat.`);
         return '';
     }
 
@@ -4214,7 +4969,7 @@ async function addGroupMemberCallback(_, name) {
     const avatar = character.avatar;
 
     if (group.members.includes(avatar)) {
-        toastr.warning(`${character.name} is already a member of this group.`);
+        toastr.warning(t`${character.name} is already a member of this group.`);
         return '';
     }
 
@@ -4233,7 +4988,7 @@ async function triggerGenerationCallback(args, value) {
             await waitUntilCondition(() => !is_send_press && !is_group_generating, 10000, 100);
         } catch {
             console.warn('Timeout waiting for generation unlock');
-            toastr.warning('Cannot run /trigger command while the reply is being generated.');
+            toastr.warning(t`Cannot run /trigger command while the reply is being generated.`);
             outerResolve(Promise.resolve(''));
             return '';
         }
@@ -4297,8 +5052,7 @@ async function sendUserMessageCallback(args, text) {
         const name = args.name || '';
         const avatar = findPersonaByName(name) || user_avatar;
         message = await sendMessageAsUser(text, bias, insertAt, compact, name, avatar);
-    }
-    else {
+    } else {
         message = await sendMessageAsUser(text, bias, insertAt, compact);
     }
 
@@ -4338,7 +5092,7 @@ async function deleteMessagesByNameCallback(_, name) {
     await saveChatConditional();
     await reloadCurrentChat();
 
-    toastr.info(`Deleted ${messagesToDelete.length} messages from ${name}`);
+    toastr.info(t`Deleted ${messagesToDelete.length} messages from ${name}`);
     return '';
 }
 
@@ -4374,6 +5128,598 @@ async function openChat(chid) {
     await reloadCurrentChat();
 }
 
+/**
+ * Opens a file picker dialog for selecting an image.
+ * @returns {Promise<string|null>} Base64 data URL of selected image, or null if cancelled
+ */
+async function promptForAvatarFile() {
+    return new Promise(resolve => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = supportedImageMimeTypes.join(',');
+        input.onchange = async (e) => {
+            if (!(e.target instanceof HTMLInputElement)) {
+                return '';
+            }
+            const file = e.target?.files?.[0];
+            if (!file) {
+                resolve(null);
+                return;
+            }
+            try {
+                const converted = await ensureImageFormatSupported(file);
+                const base64 = await getBase64Async(converted);
+                resolve(base64);
+            } catch (error) {
+                console.error('Error processing selected image:', error);
+                toastr.error(t`Failed to process selected image: ${error.message}`);
+                resolve(null);
+            }
+        };
+        input.oncancel = () => resolve(null);
+        input.click();
+    });
+}
+
+/**
+ * Resolves avatar data from various input formats (base64, local path, or prompt).
+ * @param {string} input - "prompt" to open file picker, base64 data URL, or local file path
+ * @returns {Promise<string|null>} Base64 data URL or null if invalid/cancelled
+ */
+async function resolveAvatarData(input) {
+    if (!input || typeof input !== 'string') {
+        return null;
+    }
+
+    const trimmed = input.trim();
+
+    // Special value "prompt" opens file picker
+    if (trimmed.toLowerCase() === 'prompt') {
+        return await promptForAvatarFile();
+    }
+
+    // Already a base64 data URL
+    if (trimmed.startsWith('data:image/')) {
+        return trimmed;
+    }
+
+    // External URLs are not supported
+    if (isExternalUrl(trimmed)) {
+        toastr.warning(t`External URLs are not supported for avatars. Use a local file path or "prompt" to select a file.`);
+        return null;
+    }
+    // Local path or URL (e.g., characters/name.png) - fetch from ST server or same origin
+    // Supported paths: /characters/*, /backgrounds/*, /User Avatars/*, /assets/*, /user/images/*
+    // Also supports same-origin URLs (e.g., https://localhost:8000/characters/name.png)
+    if (trimmed.includes('/') || trimmed.endsWith('.png')) {
+        try {
+            // Construct the URL to fetch the local file
+            let url = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+            // Handle same-origin URLs
+            if (trimmed.startsWith(window.location.origin)) {
+                url = new URL(trimmed).pathname;
+            }
+            // If there is no subfolder, we guess this should be a character image
+            if (!url.includes('/', 1)) {
+                url = '/characters/' + trimmed;
+            }
+
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`File not found or inaccessible: ${response.status}`);
+            }
+            const blob = await response.blob();
+            if (!blob.type.startsWith('image/')) {
+                throw new Error('File is not an image');
+            }
+            const converted = await ensureImageFormatSupported(new File([blob], 'avatar.png', { type: blob.type }));
+            return await getBase64Async(converted);
+        } catch (error) {
+            console.error('Error fetching local avatar:', error);
+            toastr.warning(t`Failed to load avatar from path: ${error.message}`);
+            return null;
+        }
+    }
+
+    // Unknown format
+    console.warn('Unknown avatar format:', trimmed.substring(0, 50));
+    toastr.warning(t`Unknown avatar format. Use "prompt" to select a file, or provide a local file path.`);
+    return null;
+}
+
+/**
+ * Uploads an avatar image to a character.
+ * @param {string} avatarKey - The character's avatar filename (e.g., "name.png")
+ * @param {string} base64Data - Base64 data URL of the image
+ * @param {object} [options={}] - Options
+ * @param {boolean} [options.resizePrompt=false] - Whether to show the resize/crop prompt
+ * @returns {Promise<boolean>} True if upload was successful, false if cancelled or failed
+ */
+async function uploadCharacterAvatar(avatarKey, base64Data, { resizePrompt = false } = {}) {
+    if (!base64Data || !avatarKey) {
+        return false;
+    }
+
+    let finalImageData = base64Data;
+
+    // Handle resize prompt
+    if (resizePrompt) {
+        if (power_user.never_resize_avatars) {
+            toastr.warning(t`Avatar resizing is disabled in settings. The image will be uploaded as-is.`);
+        } else {
+            const dlg = new Popup(t`Set the crop position of the avatar image`, POPUP_TYPE.CROP, '', { cropImage: base64Data });
+            const croppedImage = await dlg.show();
+            if (!croppedImage) {
+                // User cancelled the crop dialog
+                return false;
+            }
+            // The dialog returns the already-cropped image
+            finalImageData = String(croppedImage);
+        }
+    }
+
+    try {
+        // Convert base64 to blob
+        const response = await fetch(finalImageData);
+        const blob = await response.blob();
+
+        // Create form data for upload
+        const formData = new FormData();
+        formData.append('avatar', blob, 'avatar.png');
+        formData.append('avatar_url', avatarKey);
+
+        const uploadResponse = await fetch('/api/characters/edit-avatar', {
+            method: 'POST',
+            headers: getRequestHeaders({ omitContentType: true }),
+            body: formData,
+        });
+
+        if (!uploadResponse.ok) {
+            const errorText = await uploadResponse.text();
+            throw new Error(errorText); // Will be caught and logged below
+        }
+
+        // Bust cache for the avatar thumbnail and character image
+        const thumbnailUrl = getThumbnailUrl('avatar', avatarKey);
+        await fetch(thumbnailUrl, { method: 'GET', cache: 'reload' });
+        await fetch(`/characters/${avatarKey}`, { method: 'GET', cache: 'reload' });
+
+        // Refresh all visible avatar images that use this thumbnail URL
+        // This handles messages, character list, and any other place using the thumbnail
+        const avatarImages = document.querySelectorAll(`img[src^="${thumbnailUrl}"]`);
+        for (const img of avatarImages) {
+            if (img instanceof HTMLImageElement) {
+                const originalSrc = img.src;
+                img.src = '';
+                img.src = originalSrc;
+            }
+        }
+        console.debug(`Refreshed ${avatarImages.length} avatar images for ${avatarKey}`);
+
+        return true;
+    } catch (error) {
+        console.error('Error uploading character avatar:', error);
+        toastr.warning(t`Failed to upload avatar: ${error.message}`);
+        return false;
+    }
+}
+
+/**
+ * Creates a new character via the API.
+ * @param {object} args Named arguments
+ * @returns {Promise<string>} The avatar key of the created character
+ */
+async function createCharacterCallback(args) {
+    const name = args.name;
+    const description = args.description;
+    const firstMessage = args.firstMessage;
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+        toastr.warning(t`Character name is required`);
+        return '';
+    }
+
+    // Build the character data object matching the server's expected format
+    const characterData = {
+        ch_name: name.trim(),
+        description: description,
+        first_mes: firstMessage,
+        personality: args.personality ?? '',
+        scenario: args.scenario ?? '',
+        mes_example: args.messageExamples ?? '',
+        creator_notes: args.creatorNotes ?? '',
+        system_prompt: args.systemPrompt ?? '',
+        post_history_instructions: args.postHistoryInstructions ?? '',
+        creator: args.creator ?? '',
+        character_version: args.characterVersion ?? '',
+        tags: args.tags ? args.tags.split(',').map(t => t.trim()).filter(t => t) : [],
+        talkativeness: args.talkativeness ?? '0.5',
+        world: args.world ?? '',
+        depth_prompt_prompt: args.depthPrompt ?? '',
+        depth_prompt_depth: args.depthPromptDepth ?? '4',
+        depth_prompt_role: args.depthPromptRole ?? 'system',
+        fav: isTrueBoolean(args.favorite) ? 'true' : 'false',
+        alternate_greetings: [],
+        extensions: '{}',
+    };
+
+    // Handle avatar if provided (URL or base64)
+    const avatarData = args.avatar ? await resolveAvatarData(args.avatar) : null;
+
+    try {
+        const response = await fetch('/api/characters/create', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(characterData),
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(errorText); // Will be caught and logged below
+        }
+
+        const avatarKey = await response.text();
+
+        // Upload avatar if provided
+        if (avatarData) {
+            const resizePrompt = !isFalseBoolean(args.avatarPromptResize);
+            const uploaded = await uploadCharacterAvatar(avatarKey, avatarData, { resizePrompt });
+            if (!uploaded && resizePrompt) {
+                // User cancelled the resize dialog, but character was still created
+                toastr.info(t`Character created without avatar (resize cancelled)`);
+            }
+        }
+
+        // Refresh the character list
+        await getCharacters();
+
+        // Select the character if requested (default: true)
+        const shouldSelect = !isFalseBoolean(args.select);
+        if (shouldSelect) {
+            const characterIndex = characters.findIndex(c => c.avatar === avatarKey);
+            if (characterIndex !== -1) {
+                // selectCharacterById handles group reset and active character setting
+                await selectCharacterById(characterIndex);
+            }
+        }
+
+        toastr.success(t`Character "${name}" created successfully`);
+        return avatarKey;
+    } catch (error) {
+        console.error('Error creating character:', error);
+        toastr.error(t`Failed to create character: ${error.message}`);
+        return '';
+    }
+}
+
+/**
+ * Updates an existing character via the merge-attributes API.
+ * @param {object} args Named arguments
+ * @returns {Promise<string>} The avatar key of the updated character
+ */
+async function updateCharacterCallback(args) {
+    // Find the target character
+    let character;
+    let characterIndex;
+    if (args.char) {
+        character = findChar({ name: args.char });
+        if (!character) {
+            toastr.warning(t`Character "${args.char}" not found`);
+            return '';
+        }
+        characterIndex = String(characters.indexOf(character));
+    } else {
+        // Use currently selected character
+        if (this_chid === undefined || !characters[this_chid]) {
+            toastr.warning(t`No character selected and no char argument provided`);
+            return '';
+        }
+        character = characters[this_chid];
+        characterIndex = this_chid;
+    }
+
+    // Build the update object with only provided fields
+    const updateData = {
+        avatar: character.avatar,
+    };
+
+    // Map argument names to character data field names
+    const fieldMappings = {
+        name: 'name',
+        description: 'description',
+        firstMessage: 'first_mes',
+        personality: 'personality',
+        scenario: 'scenario',
+        messageExamples: 'mes_example',
+        creatorNotes: 'creator_notes',
+        systemPrompt: 'system_prompt',
+        postHistoryInstructions: 'post_history_instructions',
+        creator: 'creator',
+        characterVersion: 'character_version',
+        tags: 'tags',
+    };
+
+    // Add provided fields to update data
+    let hasUpdates = false;
+    for (const [argName, fieldName] of Object.entries(fieldMappings)) {
+        if (args[argName] !== undefined) {
+            let value = args[argName];
+            // Handle tags as comma-separated array
+            if (fieldName === 'tags' && typeof value === 'string') {
+                value = value.split(',').map(t => t.trim()).filter(t => t);
+            }
+            updateData[fieldName] = value;
+            // Also set in data object for V2 spec compliance
+            if (!updateData.data) updateData.data = {};
+            updateData.data[fieldName] = value;
+            hasUpdates = true;
+        }
+    }
+
+    // Special handling for world / lorebook: store under data.extensions.world
+    if (args.world !== undefined) {
+        const value = args.world;
+        if (!updateData.data) {
+            updateData.data = {};
+        }
+        if (!updateData.data.extensions) {
+            updateData.data.extensions = {};
+        }
+        updateData.data.extensions.world = value;
+        hasUpdates = true;
+    }
+
+    // Handle talkativeness (stored in extensions)
+    if (args.talkativeness !== undefined) {
+        const talkValue = parseFloat(args.talkativeness);
+        if (!isNaN(talkValue)) {
+            updateData.talkativeness = talkValue;
+            if (!updateData.data) updateData.data = {};
+            if (!updateData.data.extensions) updateData.data.extensions = {};
+            updateData.data.extensions.talkativeness = talkValue;
+            hasUpdates = true;
+        }
+    }
+
+    // Handle favorite
+    if (args.favorite !== undefined) {
+        const favValue = isTrueBoolean(args.favorite);
+        updateData.fav = favValue;
+        if (!updateData.data) updateData.data = {};
+        if (!updateData.data.extensions) updateData.data.extensions = {};
+        updateData.data.extensions.fav = favValue;
+        hasUpdates = true;
+    }
+
+    // Handle avatar (resolve URL/base64, upload separately after merge)
+    const avatarData = args.avatar ? await resolveAvatarData(args.avatar) : null;
+    if (avatarData) {
+        hasUpdates = true;
+    }
+
+    // Handle depth prompt fields
+    if (args.depthPrompt !== undefined || args.depthPromptDepth !== undefined || args.depthPromptRole !== undefined) {
+        if (!updateData.data) updateData.data = {};
+        if (!updateData.data.extensions) updateData.data.extensions = {};
+        if (!updateData.data.extensions.depth_prompt) updateData.data.extensions.depth_prompt = {};
+
+        if (args.depthPrompt !== undefined) {
+            updateData.data.extensions.depth_prompt.prompt = args.depthPrompt;
+            hasUpdates = true;
+        }
+        if (args.depthPromptDepth !== undefined) {
+            updateData.data.extensions.depth_prompt.depth = parseInt(args.depthPromptDepth);
+            hasUpdates = true;
+        }
+        if (args.depthPromptRole !== undefined) {
+            updateData.data.extensions.depth_prompt.role = args.depthPromptRole;
+            hasUpdates = true;
+        }
+    }
+
+    if (!hasUpdates) {
+        toastr.warning(t`No fields provided to update`);
+        return character.avatar;
+    }
+
+    try {
+        const response = await fetch('/api/characters/merge-attributes', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(updateData),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.message || `Server returned ${response.status}`); // Will be caught and logged below
+        }
+
+        // Upload avatar if provided
+        if (avatarData) {
+            const resizePrompt = !isFalseBoolean(args.avatarPromptResize);
+            const uploaded = await uploadCharacterAvatar(character.avatar, avatarData, { resizePrompt });
+            if (!uploaded && resizePrompt) {
+                // User cancelled the resize dialog
+                toastr.warning(t`Avatar update cancelled`);
+            }
+        }
+
+        // Refresh the character data
+        await getOneCharacter(character.avatar);
+
+        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterIndex, character: characters[characterIndex] } });
+
+        // Update the side panel if this is the currently selected character
+        if (characterIndex === this_chid) {
+            select_selected_character(this_chid, { switchMenu: false });
+        }
+
+        toastr.success(t`Character "${character.name}" updated successfully`);
+        return character.avatar;
+    } catch (error) {
+        console.error('Error updating character:', error);
+        toastr.error(t`Failed to update character: ${error.message}`);
+        return '';
+    }
+}
+
+/**
+ * Duplicates a character via the slash command.
+ * @param {object} args Named arguments
+ * @returns {Promise<string>} The avatar key of the duplicated character
+ */
+async function duplicateCharacterCallback(args) {
+    // Find the target character if specified
+    let targetAvatar = null;
+    if (args.char) {
+        const character = findChar({ name: args.char });
+        if (!character) {
+            toastr.warning(t`Character "${args.char}" not found`);
+            return '';
+        }
+        targetAvatar = character.avatar;
+    }
+
+    // Call the duplicateCharacter utility with silent mode (no popup)
+    const newAvatarKey = await duplicateCharacter({ avatar: targetAvatar, silent: true });
+    if (!newAvatarKey) {
+        toastr.error(t`Failed to duplicate character`);
+        return '';
+    }
+
+    // Select the character if requested (default: false)
+    const shouldSelect = isTrueBoolean(args.select);
+    if (shouldSelect) {
+        const characterIndex = characters.findIndex(c => c.avatar === newAvatarKey);
+        if (characterIndex !== -1) {
+            await selectCharacterById(characterIndex);
+        }
+    }
+
+    return newAvatarKey;
+}
+
+/**
+ * Gets character data or a specific field.
+ * @param {object} args Named arguments
+ * @returns {Promise<string>} Character data or field value
+ */
+async function getCharacterDataCallback(args) {
+    // Find the target character
+    let character;
+    if (args.char) {
+        character = findChar({ name: args.char });
+        if (!character) {
+            toastr.warning(t`Character "${args.char}" not found`);
+            return '';
+        }
+    } else {
+        // Use currently selected character
+        if (this_chid === undefined || !characters[this_chid]) {
+            toastr.warning(t`No character selected and no char argument provided`);
+            return '';
+        }
+        character = characters[this_chid];
+    }
+
+    // If a specific field is requested
+    if (args.field) {
+        const fieldName = args.field;
+
+        // Try to get from data object first (V2 spec), then fall back to root
+        let value = character.data?.[fieldName] ?? character[fieldName];
+
+        // Handle special cases for nested fields
+        if (fieldName === 'talkativeness') {
+            value = character.data?.extensions?.talkativeness ?? character.talkativeness ?? 0.5;
+        }
+        if (fieldName === 'tags') {
+            value = character.data?.tags ?? character.tags ?? [];
+            if (Array.isArray(value)) {
+                value = value.join(', ');
+            }
+        }
+
+        if (value === undefined) {
+            return '';
+        }
+
+        return await slashCommandReturnHelper.doReturn(args.return ?? 'pipe', value, { objectToStringFunc: x => String(x) });
+    }
+
+    // Return entire character data
+    const charData = {
+        avatar: character.avatar,
+        name: character.name,
+        description: character.description ?? character.data?.description ?? '',
+        personality: character.personality ?? character.data?.personality ?? '',
+        scenario: character.scenario ?? character.data?.scenario ?? '',
+        first_mes: character.first_mes ?? character.data?.first_mes ?? '',
+        mes_example: character.mes_example ?? character.data?.mes_example ?? '',
+        creator_notes: character.data?.creator_notes ?? '',
+        system_prompt: character.data?.system_prompt ?? '',
+        post_history_instructions: character.data?.post_history_instructions ?? '',
+        creator: character.data?.creator ?? '',
+        character_version: character.data?.character_version ?? '',
+        tags: character.data?.tags ?? character.tags ?? [],
+        talkativeness: character.data?.extensions?.talkativeness ?? character.talkativeness ?? 0.5,
+        fav: character.fav ?? character.data?.extensions?.fav ?? false,
+        chat: character.chat,
+        create_date: character.create_date,
+    };
+
+    return await slashCommandReturnHelper.doReturn(args.return ?? 'pipe', charData, { objectToStringFunc: x => JSON.stringify(x, null, 2) });
+}
+
+/**
+ * Deletes a character using the core deleteCharacter function.
+ * @param {object} args Named arguments
+ * @returns {Promise<string>} 'true' if deleted, 'false' otherwise
+ */
+async function deleteCharacterCallback(args) {
+    // Find the target character
+    let character;
+    if (args.char) {
+        character = findChar({ name: args.char });
+        if (!character) {
+            toastr.warning(t`Character "${args.char}" not found`);
+            return 'false';
+        }
+    } else {
+        // Use currently selected character
+        if (this_chid === undefined || !characters[this_chid]) {
+            toastr.warning(t`No character selected and no char argument provided`);
+            return 'false';
+        }
+        character = characters[this_chid];
+    }
+
+    const deleteChats = isTrueBoolean(args.deleteChats);
+    const silent = isTrueBoolean(args.silent);
+
+    // Show confirmation popup unless silent mode
+    if (!silent) {
+        const confirmMessage = deleteChats
+            ? t`Are you sure you want to delete "${character.name}" and all associated chats? This action cannot be undone.`
+            : t`Are you sure you want to delete "${character.name}"? This action cannot be undone.`;
+
+        const result = await callGenericPopup(confirmMessage, POPUP_TYPE.CONFIRM);
+        if (result !== POPUP_RESULT.AFFIRMATIVE) {
+            return 'false';
+        }
+    }
+
+    try {
+        // Use the core deleteCharacter function which handles all cleanup and events
+        const success = await deleteCharacter(character.avatar, { deleteChats });
+        return success ? 'true' : 'false';
+    } catch (error) {
+        console.error('Error deleting character:', error);
+        toastr.error(t`Failed to delete character: ${error.message}`);
+        return 'false';
+    }
+}
+
 async function continueChatCallback(args, prompt) {
     const shouldAwait = isTrueBoolean(args?.await);
 
@@ -4382,7 +5728,7 @@ async function continueChatCallback(args, prompt) {
             await waitUntilCondition(() => !is_send_press && !is_group_generating, 10000, 100);
         } catch {
             console.warn('Timeout waiting for generation unlock');
-            toastr.warning('Cannot run /continue command while the reply is being generated.');
+            toastr.warning(t`Cannot run /continue command while the reply is being generated.`);
             return reject();
         }
 
@@ -4407,19 +5753,77 @@ async function continueChatCallback(args, prompt) {
     return '';
 }
 
+async function regenerateChatCallback(args) {
+    const shouldAwait = isTrueBoolean(args?.await);
+
+    const outerPromise = new Promise((outerResolve) => setTimeout(async () => {
+        try {
+            await waitUntilCondition(() => !is_send_press && !is_group_generating, 10000, 100);
+        } catch {
+            console.warn('Timeout waiting for generation unlock');
+            toastr.warning(t`Cannot run /regenerate command while the reply is being generated.`);
+            outerResolve(Promise.resolve(''));
+            return '';
+        }
+
+        if (selected_group) {
+            outerResolve(Promise.resolve(regenerateGroup()));
+            return '';
+        }
+
+        outerResolve(new Promise(innerResolve => setTimeout(() => {
+            innerResolve(Generate('regenerate'));
+        }, 1)));
+        return '';
+    }, 1));
+
+    if (shouldAwait) {
+        const innerPromise = await outerPromise;
+        await innerPromise;
+    }
+
+    return '';
+}
+
+async function swipeChatCallback(args) {
+    const shouldAwait = isTrueBoolean(args?.await);
+    const direction = args?.direction === SWIPE_DIRECTION.LEFT ? SWIPE_DIRECTION.LEFT : SWIPE_DIRECTION.RIGHT;
+
+    const outerPromise = new Promise((outerResolve) => setTimeout(async () => {
+        try {
+            await waitUntilCondition(() => !is_send_press && !is_group_generating, 10000, 100);
+        } catch {
+            console.warn('Timeout waiting for generation unlock');
+            toastr.warning(t`Cannot run /swipe command while the reply is being generated.`);
+            outerResolve(Promise.resolve(''));
+            return '';
+        }
+
+        outerResolve(Promise.resolve(swipe(null, direction, { source: SWIPE_SOURCE.SLASH_COMMAND, repeated: false })));
+        return '';
+    }, 1));
+
+    if (shouldAwait) {
+        const innerPromise = await outerPromise;
+        await innerPromise;
+    }
+
+    return '';
+}
+
 export async function generateSystemMessage(args, prompt) {
     $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
 
     if (!prompt) {
         console.warn('WARN: No prompt provided for /sysgen command');
-        toastr.warning('You must provide a prompt for the system message');
+        toastr.warning(t`You must provide a prompt for the system message`);
         return '';
     }
 
     const trim = isTrueBoolean(args?.trim?.toString());
 
     // Generate and regex the output if applicable
-    const toast = toastr.info('Please wait', 'Generating...');
+    const toast = toastr.info(t`Please wait`, t`Generating...`);
     const message = await generateQuietPrompt({ quietPrompt: prompt, trimToSentence: trim });
     toastr.clear(toast);
 
@@ -4444,7 +5848,7 @@ function setFlatModeCallback() {
 async function setNarratorName(_, text) {
     const name = text || NARRATOR_NAME_DEFAULT;
     chat_metadata[NARRATOR_NAME_KEY] = name;
-    toastr.info(`System narrator name set to ${name}`);
+    toastr.info(t`System narrator name set to ${name}`);
     await saveChatConditional();
     return '';
 }
@@ -4461,10 +5865,10 @@ async function setNarratorName(_, text) {
 export function validateArrayArgString(arg, name, { allowUndefined = true } = {}) {
     if (arg === undefined) {
         if (allowUndefined) return undefined;
-        throw new Error(`Argument "${name}" is undefined, but must be a string array`);
+        throw new Error(t`Argument "${name}" is undefined, but must be a string array`);
     }
-    if (!Array.isArray(arg)) throw new Error(`Argument "${name}" must be an array`);
-    if (!arg.every(x => typeof x === 'string')) throw new Error(`Argument "${name}" must be an array of strings`);
+    if (!Array.isArray(arg)) throw new Error(t`Argument "${name}" must be an array`);
+    if (!arg.every(x => typeof x === 'string')) throw new Error(t`Argument "${name}" must be an array of strings`);
     return arg;
 }
 
@@ -4480,10 +5884,10 @@ export function validateArrayArgString(arg, name, { allowUndefined = true } = {}
 export function validateArrayArg(arg, name, { allowUndefined = true } = {}) {
     if (arg === undefined) {
         if (allowUndefined) return [];
-        throw new Error(`Argument "${name}" is undefined, but must be an array of strings or closures`);
+        throw new Error(t`Argument "${name}" is undefined, but must be an array of strings or closures`);
     }
-    if (!Array.isArray(arg)) throw new Error(`Argument "${name}" must be an array`);
-    if (!arg.every(x => typeof x === 'string' || x instanceof SlashCommandClosure)) throw new Error(`Argument "${name}" must be an array of strings or closures`);
+    if (!Array.isArray(arg)) throw new Error(t`Argument "${name}" must be an array`);
+    if (!arg.every(x => typeof x === 'string' || x instanceof SlashCommandClosure)) throw new Error(t`Argument "${name}" must be an array of strings or closures`);
     return arg;
 }
 
@@ -4505,12 +5909,10 @@ export function getNameAndAvatarForMessage(character, name = null) {
     let force_avatar, original_avatar;
     if (character?.avatar === currentChar?.avatar || isNeutralCharacter) {
         // If the targeted character is the currently selected one in a solo chat, we don't need to force any avatars
-    }
-    else if (character && character.avatar !== 'none') {
+    } else if (character && character.avatar !== 'none') {
         force_avatar = getThumbnailUrl('avatar', character.avatar);
         original_avatar = character.avatar;
-    }
-    else {
+    } else {
         force_avatar = default_avatar;
         original_avatar = default_avatar;
     }
@@ -4522,13 +5924,128 @@ export function getNameAndAvatarForMessage(character, name = null) {
     };
 }
 
+/**
+ * Changes the character role on a message at a given index.
+ * @param {object?} args - Named arguments
+ * @param {string} role - Role to change to.
+ *
+ * @returns {Promise<string>} The updated message role.
+ */
+async function messageRoleCallback(args, role) {
+    let modifyAt = Number(args?.at ?? (chat.length - 1));
+    // Convert possible depth parameter to index
+    if (!isNaN(modifyAt) && (modifyAt < 0 || Object.is(modifyAt, -0))) {
+        // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
+        modifyAt = chat.length + modifyAt;
+    }
+
+    const message = chat[modifyAt];
+    if (!message) {
+        toastr.warning(t`No message found at the specified index.`);
+        return '';
+    }
+
+    role = String(role ?? '').trim().toLowerCase();
+    if (!role || !['user', 'assistant', 'system'].includes(role)) {
+        return message?.extra?.type === system_message_types.NARRATOR
+            ? 'system'
+            : message.is_user ? 'user' : 'assistant';
+    }
+
+    message.extra = message.extra || {};
+    if (role === 'system') {
+        message.extra.type = system_message_types.NARRATOR;
+    } else {
+        delete message.extra.type;
+    }
+    message.is_user = role === 'user';
+
+    await eventSource.emit(event_types.MESSAGE_EDITED, modifyAt);
+    const existingMessage = chatElement.find(`.mes[mesid="${modifyAt}"]`);
+    if (existingMessage.length) {
+        const newMessageElement = updateMessageElement(message, { messageId: modifyAt });
+        existingMessage.after(newMessageElement);
+        existingMessage.remove();
+    }
+    await eventSource.emit(event_types.MESSAGE_UPDATED, modifyAt);
+    await saveChatConditional();
+
+    return role;
+}
+
+/**
+ * Changes the character name on a message at a given index.
+ * @param {object?} args - Named arguments
+ * @param {string} name - Name to change to.
+ *
+ * @returns {Promise<string>} The updated message name.
+ */
+async function messageNameCallback(args, name) {
+    let modifyAt = Number(args?.at ?? (chat.length - 1));
+    // Convert possible depth parameter to index
+    if (!isNaN(modifyAt) && (modifyAt < 0 || Object.is(modifyAt, -0))) {
+        // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
+        modifyAt = chat.length + modifyAt;
+    }
+
+    const message = chat[modifyAt];
+    if (!message) {
+        toastr.warning(t`No message found at the specified index.`);
+        return '';
+    }
+
+    name = String(name ?? '').trim();
+    if (!name) {
+        return message.name;
+    }
+
+    let newName = '';
+
+    if (message.is_user) {
+        const persona = findPersona({ name: name });
+        if (persona) {
+            message.name = newName = persona.name;
+            message.force_avatar = getThumbnailUrl('persona', persona.avatar);
+            message.original_avatar = persona.avatar;
+        } else {
+            message.name = newName = name;
+            message.force_avatar = default_avatar;
+            message.original_avatar = default_avatar;
+        }
+    } else {
+        const character = findChar({ name: name });
+        if (character) {
+            const characterInfo = getNameAndAvatarForMessage(character, name);
+            message.name = newName = characterInfo.name;
+            message.force_avatar = characterInfo.force_avatar;
+            message.original_avatar = characterInfo.original_avatar;
+        } else {
+            message.name = newName = name;
+            message.force_avatar = default_avatar;
+            message.original_avatar = default_avatar;
+        }
+    }
+
+    await eventSource.emit(event_types.MESSAGE_EDITED, modifyAt);
+    const existingMessage = chatElement.find(`.mes[mesid="${modifyAt}"]`);
+    if (existingMessage.length) {
+        const newMessageElement = updateMessageElement(message, { messageId: modifyAt });
+        existingMessage.after(newMessageElement);
+        existingMessage.remove();
+    }
+    await eventSource.emit(event_types.MESSAGE_UPDATED, modifyAt);
+    await saveChatConditional();
+
+    return newName;
+}
+
 export async function sendMessageAs(args, text) {
     let name = args.name?.trim();
 
     if (!name) {
         const namelessWarningKey = 'sendAsNamelessWarningShown';
         if (accountStorage.getItem(namelessWarningKey) !== 'true') {
-            toastr.warning('To avoid confusion, please use /sendas name="Character Name"', 'Name defaulted to {{char}}', { timeOut: 10000 });
+            toastr.warning(t`To avoid confusion, please use /sendas name="Character Name"`, t`Name defaulted to {{char}}`, { timeOut: 10000 });
             accountStorage.setItem(namelessWarningKey, 'true');
         }
         name = name2;
@@ -4548,7 +6065,7 @@ export async function sendMessageAs(args, text) {
 
     const avatarCharacter = args.avatar ? findChar({ name: args.avatar }) : character;
     if (args.avatar && !avatarCharacter) {
-        toastr.warning(`Character for avatar ${args.avatar} not found`);
+        toastr.warning(t`Character for avatar ${args.avatar} not found`);
         return '';
     }
 
@@ -4573,7 +6090,7 @@ export async function sendMessageAs(args, text) {
 
     message.swipe_id = 0;
     message.swipes = [message.mes];
-    message.swipes_info = [{
+    message.swipe_info = [{
         send_date: message.send_date,
         gen_started: null,
         gen_finished: null,
@@ -4593,6 +6110,8 @@ export async function sendMessageAs(args, text) {
         // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
         insertAt = chat.length + insertAt;
     }
+
+    chat_metadata.tainted = true;
 
     if (!isNaN(insertAt) && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
@@ -4644,6 +6163,8 @@ export async function sendNarratorMessage(args, text) {
         insertAt = chat.length + insertAt;
     }
 
+    chat_metadata.tainted = true;
+
     if (!isNaN(insertAt) && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
         await saveChatConditional();
@@ -4662,7 +6183,6 @@ export async function sendNarratorMessage(args, text) {
 }
 
 export async function promptQuietForLoudResponse(who, text) {
-
     let character_id = getContext().characterId;
     if (who === 'sys') {
         text = 'System: ' + text;
@@ -4694,12 +6214,13 @@ export async function promptQuietForLoudResponse(who, text) {
         },
     };
 
+    chat_metadata.tainted = true;
+
     chat.push(message);
     await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
     addOneMessage(message);
     await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
     await saveChatConditional();
-
 }
 
 async function sendCommentMessage(args, text) {
@@ -4727,6 +6248,8 @@ async function sendCommentMessage(args, text) {
         // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
         insertAt = chat.length + insertAt;
     }
+
+    chat_metadata.tainted = true;
 
     if (!isNaN(insertAt) && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
@@ -4805,7 +6328,7 @@ function setBackgroundCallback(_, bg) {
     const result = fuse.search(bg);
 
     if (!result.length) {
-        toastr.error(`No background found with name "${bg}"`);
+        toastr.error(t`No background found with name "${bg}"`);
         return '';
     }
 
@@ -4838,6 +6361,7 @@ function getModelOptions(quiet) {
         { id: 'aphrodite_model', api: 'textgenerationwebui', type: textgen_types.APHRODITE },
         { id: 'ollama_model', api: 'textgenerationwebui', type: textgen_types.OLLAMA },
         { id: 'tabby_model', api: 'textgenerationwebui', type: textgen_types.TABBY },
+        { id: 'llamacpp_model', api: 'textgenerationwebui', type: textgen_types.LLAMACPP },
         { id: 'featherless_model', api: 'textgenerationwebui', type: textgen_types.FEATHERLESS },
         { id: 'model_openai_select', api: 'openai', type: chat_completion_sources.OPENAI },
         { id: 'model_claude_select', api: 'openai', type: chat_completion_sources.CLAUDE },
@@ -4850,6 +6374,9 @@ function getModelOptions(quiet) {
         { id: 'model_cohere_select', api: 'openai', type: chat_completion_sources.COHERE },
         { id: 'model_perplexity_select', api: 'openai', type: chat_completion_sources.PERPLEXITY },
         { id: 'model_groq_select', api: 'openai', type: chat_completion_sources.GROQ },
+        { id: 'model_chutes_select', api: 'openai', type: chat_completion_sources.CHUTES },
+        { id: 'model_siliconflow_select', api: 'openai', type: chat_completion_sources.SILICONFLOW },
+        { id: 'model_electronhub_select', api: 'openai', type: chat_completion_sources.ELECTRONHUB },
         { id: 'model_nanogpt_select', api: 'openai', type: chat_completion_sources.NANOGPT },
         { id: 'model_deepseek_select', api: 'openai', type: chat_completion_sources.DEEPSEEK },
         { id: 'model_aimlapi_select', api: 'openai', type: chat_completion_sources.AIMLAPI },
@@ -4858,6 +6385,7 @@ function getModelOptions(quiet) {
         { id: 'model_moonshot_select', api: 'openai', type: chat_completion_sources.MOONSHOT },
         { id: 'model_fireworks_select', api: 'openai', type: chat_completion_sources.FIREWORKS },
         { id: 'model_cometapi_select', api: 'openai', type: chat_completion_sources.COMETAPI },
+        { id: 'model_zai_select', api: 'openai', type: chat_completion_sources.ZAI },
         { id: 'model_novel_select', api: 'novel', type: null },
         { id: 'horde_model', api: 'koboldhorde', type: null },
     ];
@@ -4877,14 +6405,14 @@ function getModelOptions(quiet) {
     const modelSelectItem = modelSelectMap.find(x => x.api == main_api && x.type == apiSubType)?.id;
 
     if (!modelSelectItem) {
-        !quiet && toastr.info('Setting a model for your API is not supported or not implemented yet.');
+        !quiet && toastr.info(t`Setting a model for your API is not supported or not implemented yet.`);
         return nullResult;
     }
 
     const modelSelectControl = document.getElementById(modelSelectItem);
 
     if (!(modelSelectControl instanceof HTMLSelectElement) && !(modelSelectControl instanceof HTMLInputElement)) {
-        !quiet && toastr.error(`Model select control not found: ${main_api}[${apiSubType}]`);
+        !quiet && toastr.error(t`Model select control not found: ${main_api}[${apiSubType}]`);
         return nullResult;
     }
 
@@ -4937,12 +6465,12 @@ function modelCallback(args, model) {
     if (modelSelectControl instanceof HTMLInputElement) {
         modelSelectControl.value = model;
         $(modelSelectControl).trigger('input');
-        !quiet && toastr.success(`Model set to "${model}"`);
+        !quiet && toastr.success(t`Model set to "${model}"`);
         return model;
     }
 
     if (!options.length) {
-        !quiet && toastr.warning('No model options found. Check your API settings.');
+        !quiet && toastr.warning(t`No model options found. Check your API settings.`);
         return '';
     }
 
@@ -4965,10 +6493,10 @@ function modelCallback(args, model) {
     if (newSelectedOption) {
         modelSelectControl.value = newSelectedOption.value;
         $(modelSelectControl).trigger('change');
-        !quiet && toastr.success(`Model set to "${newSelectedOption.text}"`);
+        !quiet && toastr.success(t`Model set to "${newSelectedOption.text}"`);
         return newSelectedOption.value;
     } else {
-        !quiet && toastr.warning(`No model found with name "${model}"`);
+        !quiet && toastr.warning(t`No model found with name "${model}"`);
         return '';
     }
 }
@@ -5149,7 +6677,7 @@ async function setApiUrlCallback({ api = null, connect = 'true', quiet = 'false'
         }
 
         if (!isCurrentlyCustomOpenai && autoConnect) {
-            toastr.warning('Custom OpenAI API is not the currently selected API, so we cannot do an auto-connect. Consider switching to it via /api beforehand.');
+            toastr.warning(t`Custom OpenAI API is not the currently selected API, so we cannot do an auto-connect. Consider switching to it via /api beforehand.`);
             return '';
         }
 
@@ -5162,6 +6690,88 @@ async function setApiUrlCallback({ api = null, connect = 'true', quiet = 'false'
         return url;
     }
 
+    const isCurrentlyZAI = main_api === 'openai' && oai_settings.chat_completion_source === chat_completion_sources.ZAI;
+    if (api === chat_completion_sources.ZAI || (!api && isCurrentlyZAI)) {
+        if (!url) {
+            return oai_settings.zai_endpoint || ZAI_ENDPOINT.COMMON;
+        }
+
+        const permittedValues = Object.values(ZAI_ENDPOINT);
+        if (!permittedValues.includes(url)) {
+            !isQuiet && toastr.warning(t`Valid options are: ${permittedValues.join(', ')}`, t`ZAI endpoint '${url}' is not a valid option.`);
+            return '';
+        }
+
+        if (!isCurrentlyZAI && autoConnect) {
+            toastr.warning(t`Z.AI is not the currently selected API, so we cannot do an auto-connect. Consider switching to it via /api beforehand.`);
+            return '';
+        }
+
+        $('#zai_endpoint').val(url).trigger('input');
+
+        if (autoConnect) {
+            $('#api_button_openai').trigger('click');
+        }
+
+        return oai_settings.zai_endpoint || ZAI_ENDPOINT.COMMON;
+    }
+
+    const isCurrentlySiliconFlow = main_api === 'openai' && oai_settings.chat_completion_source === chat_completion_sources.SILICONFLOW;
+    if (api === chat_completion_sources.SILICONFLOW || (!api && isCurrentlySiliconFlow)) {
+        if (!url) {
+            return oai_settings.siliconflow_endpoint || SILICONFLOW_ENDPOINT.GLOBAL;
+        }
+
+        const permittedValues = Object.values(SILICONFLOW_ENDPOINT);
+        if (!permittedValues.includes(url)) {
+            !isQuiet && toastr.warning(t`Valid options are: ${permittedValues.join(', ')}`, t`SiliconFlow endpoint '${url}' is not a valid option.`);
+            return '';
+        }
+
+        if (!isCurrentlySiliconFlow && autoConnect) {
+            toastr.warning(t`SiliconFlow is not the currently selected API, so we cannot do an auto-connect. Consider switching to it via /api beforehand.`);
+            return '';
+        }
+
+        $('#siliconflow_endpoint').val(url).trigger('input');
+
+        if (autoConnect) {
+            $('#api_button_openai').trigger('click');
+        }
+
+        return oai_settings.siliconflow_endpoint || SILICONFLOW_ENDPOINT.GLOBAL;
+    }
+
+    const isCurrentlyVertexAI = main_api === 'openai' && oai_settings.chat_completion_source === chat_completion_sources.VERTEXAI;
+    if (api === chat_completion_sources.VERTEXAI || (!api && isCurrentlyVertexAI)) {
+        const defaultRegion = 'us-central1';
+        const permittedValues = Array
+            .from(document.querySelectorAll('#vertexai_region_suggestions option'))
+            .map(e => e instanceof HTMLOptionElement ? e.value : '')
+            .filter(x => x);
+
+        if (!url) {
+            return oai_settings.vertexai_region || defaultRegion;
+        }
+
+        if (!permittedValues.includes(url)) {
+            !isQuiet && toastr.info(t`Generation requests may fail.`, t`Unknown VertexAI region '${url}'`);
+        }
+
+        if (!isCurrentlyVertexAI && autoConnect) {
+            toastr.warning(t`VertexAI is not the currently selected API, so we cannot do an auto-connect. Consider switching to it via /api beforehand.`);
+            return '';
+        }
+
+        $('#vertexai_region').val(url).trigger('input');
+
+        if (autoConnect) {
+            $('#api_button_openai').trigger('click');
+        }
+
+        return oai_settings.vertexai_region || defaultRegion;
+    }
+
     // Special handling for Kobold Classic API
     const isCurrentlyKoboldClassic = main_api === 'kobold';
     if (api === 'kobold' || (!api && isCurrentlyKoboldClassic)) {
@@ -5170,7 +6780,7 @@ async function setApiUrlCallback({ api = null, connect = 'true', quiet = 'false'
         }
 
         if (!isCurrentlyKoboldClassic && autoConnect) {
-            toastr.warning('Kobold Classic API is not the currently selected API, so we cannot do an auto-connect. Consider switching to it via /api beforehand.');
+            toastr.warning(t`Kobold Classic API is not the currently selected API, so we cannot do an auto-connect. Consider switching to it via /api beforehand.`);
             return '';
         }
 
@@ -5187,26 +6797,26 @@ async function setApiUrlCallback({ api = null, connect = 'true', quiet = 'false'
 
     // Do some checks and get the api type we are targeting with this command
     if (api && !Object.values(textgen_types).includes(api)) {
-        !isQuiet && toastr.warning(`API '${api}' is not a valid text_gen API.`);
+        !isQuiet && toastr.warning(t`API '${api}' is not a valid text_gen API.`);
         return '';
     }
     if (!api && !Object.values(textgen_types).includes(textgenerationwebui_settings.type)) {
-        !isQuiet && toastr.warning(`API '${textgenerationwebui_settings.type}' is not a valid text_gen API.`);
+        !isQuiet && toastr.warning(t`API '${textgenerationwebui_settings.type}' is not a valid text_gen API.`);
         return '';
     }
     if (!api && main_api !== 'textgenerationwebui') {
-        !isQuiet && toastr.warning(`API type '${main_api}' does not support setting the server URL.`);
+        !isQuiet && toastr.warning(t`API type '${main_api}' does not support setting the server URL.`);
         return '';
     }
     if (api && url && autoConnect && api !== textgenerationwebui_settings.type) {
-        !isQuiet && toastr.warning(`API '${api}' is not the currently selected API, so we cannot do an auto-connect. Consider switching to it via /api beforehand.`);
+        !isQuiet && toastr.warning(t`API '${api}' is not the currently selected API, so we cannot do an auto-connect. Consider switching to it via /api beforehand.`);
         return '';
     }
     const type = api || textgenerationwebui_settings.type;
 
     const inputSelector = SERVER_INPUTS[type];
     if (!inputSelector) {
-        !isQuiet && toastr.warning(`API '${type}' does not have a server url input.`);
+        !isQuiet && toastr.warning(t`API '${type}' does not have a server url input.`);
         return '';
     }
 
@@ -5239,7 +6849,7 @@ async function selectTokenizerCallback(_, name) {
     const result = fuse.search(name);
 
     if (result.length === 0) {
-        toastr.warning(`Tokenizer "${name}" not found`);
+        toastr.warning(t`Tokenizer "${name}" not found`);
         return '';
     }
 
@@ -5398,20 +7008,20 @@ export async function executeSlashCommandsOnChatInput(text, options = {}) {
         document.querySelector('#form_sheld').classList.add('script_error');
         result = new SlashCommandClosureResult();
         result.isError = true;
-        result.errorMessage = e.message || 'An unknown error occurred';
+        result.errorMessage = e.message || t`An unknown error occurred`;
         if (e.cause !== 'abort') {
             if (e instanceof SlashCommandExecutionError) {
                 /**@type {SlashCommandExecutionError}*/
                 const ex = e;
                 const toast = `
                     <div>${ex.message}</div>
-                    <div>Line: ${ex.line} Column: ${ex.column}</div>
+                    <div>${t`Line`}: ${ex.line} ${t`Column`}: ${ex.column}</div>
                     <pre style="text-align:left;">${ex.hint}</pre>
                     `;
-                const clickHint = '<p>Click to see details</p>';
+                const clickHint = `<p>${t`Click to see details`}</p>`;
                 toastr.error(
                     `${toast}${clickHint}`,
-                    'SlashCommandExecutionError',
+                    'Slash Command Execution Error',
                     { escapeHtml: false, timeOut: 10000, onclick: () => callGenericPopup(toast, POPUP_TYPE.TEXT, '', { allowHorizontalScrolling: true, allowVerticalScrolling: true }) },
                 );
             } else {
@@ -5462,10 +7072,10 @@ async function executeSlashCommandsWithOptions(text, options = {}) {
             const ex = e;
             const toast = `
                 <div>${ex.message}</div>
-                <div>Line: ${ex.line} Column: ${ex.column}</div>
+                <div>${t`Line`}: ${ex.line} ${t`Column`}: ${ex.column}</div>
                 <pre style="text-align:left;">${ex.hint}</pre>
                 `;
-            const clickHint = '<p>Click to see details</p>';
+            const clickHint = `<p>${t`Click to see details`}</p>`;
             toastr.error(
                 `${toast}${clickHint}`,
                 'SlashCommandParserError',
@@ -5481,7 +7091,7 @@ async function executeSlashCommandsWithOptions(text, options = {}) {
     try {
         const result = await closure.execute();
         if (result.isAborted && !result.isQuietlyAborted) {
-            toastr.warning(result.abortReason, 'Command execution aborted');
+            toastr.warning(result.abortReason, t`Command execution aborted`);
             closure.abortController.signal.isQuiet = true;
         }
         return result;
@@ -5543,15 +7153,6 @@ async function executeSlashCommands(text, handleParserErrors = true, scope = nul
  * @returns {Promise<AutoComplete>}
  */
 export async function setSlashCommandAutoComplete(textarea, isFloating = false) {
-    function canUseNegativeLookbehind() {
-        try {
-            new RegExp('(?<!_)');
-            return true;
-        } catch (e) {
-            return false;
-        }
-    }
-
     if (!canUseNegativeLookbehind()) {
         console.warn('Cannot use negative lookbehind in this browser');
         return;
@@ -5566,13 +7167,15 @@ export async function setSlashCommandAutoComplete(textarea, isFloating = false) 
     );
     return ac;
 }
-/**@type {HTMLTextAreaElement} */
-const sendTextarea = document.querySelector('#send_textarea');
-setSlashCommandAutoComplete(sendTextarea);
-sendTextarea.addEventListener('input', () => {
-    if (sendTextarea.value[0] == '/') {
-        sendTextarea.style.fontFamily = 'var(--monoFontFamily, monospace)';
-    } else {
-        sendTextarea.style.fontFamily = null;
-    }
-});
+
+export async function initSlashCommandAutoComplete() {
+    const sendTextarea = /** @type {HTMLTextAreaElement} */ (document.querySelector('#send_textarea'));
+    setSlashCommandAutoComplete(sendTextarea);
+    sendTextarea.addEventListener('input', () => {
+        if (sendTextarea.value && sendTextarea.value[0] == '/') {
+            sendTextarea.style.fontFamily = 'var(--monoFontFamily, monospace)';
+        } else {
+            sendTextarea.style.fontFamily = null;
+        }
+    });
+}

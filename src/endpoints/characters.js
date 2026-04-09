@@ -14,7 +14,7 @@ import storage from 'node-persist';
 
 import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction } from '../middleware/validateFileName.js';
-import { deepMerge, humanizedISO8601DateTime, tryParse, extractFileFromZipBuffer, MemoryLimitedMap, getConfigValue, mutateJsonString } from '../util.js';
+import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write } from '../character-card-parser.js';
 import { readWorldInfoFile } from './worldinfo.js';
@@ -23,6 +23,7 @@ import { importRisuSprites } from './sprites.js';
 import { getUserDirectories } from '../users.js';
 import { getChatInfo } from './chats.js';
 import { ByafParser } from '../byaf.js';
+import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import {
     needsRebuild,
@@ -122,6 +123,7 @@ class DiskCache {
             dir: this.cachePath,
             ttl: false,
             forgiveParseErrors: true,
+            expiredInterval: 0,
             // @ts-ignore
             maxFileDescriptors: 100,
         });
@@ -338,9 +340,8 @@ async function tryReadImage(imgPath, crop) {
     try {
         const rawImg = await Jimp.read(imgPath);
         return await applyAvatarCropResize(rawImg, crop);
-    }
-    // If it's an unsupported type of image (APNG) - just read the file as buffer
-    catch (error) {
+    } catch (error) {
+        // If it's an unsupported type of image (APNG) - just read the file as buffer
         console.error(`Failed to read image: ${imgPath}`, error);
         return fs.readFileSync(imgPath);
     }
@@ -401,6 +402,7 @@ const toShallow = (character) => {
             tags: _.get(character, 'data.tags', []),
             extensions: {
                 fav: _.get(character, 'data.extensions.fav', false),
+                world: _.get(character, 'data.extensions.world', ''),
             },
         },
     };
@@ -468,8 +470,7 @@ const processCharacter = async (item, directories, { shallow }) => {
         character['data_size'] = calculateDataSize(jsonObject?.data);
         if (gotta_save) saveDictToFile(dateAddedData, JSONFILE);
         return shallow ? toShallow(character) : character;
-    }
-    catch (err) {
+    } catch (err) {
         console.error(`Could not process character: ${item}`);
 
         if (err instanceof SyntaxError) {
@@ -562,7 +563,7 @@ function getCharaCardV2(jsonObject, directories, hoistDate = true) {
         jsonObject = convertToV2(jsonObject, directories);
 
         if (hoistDate && !jsonObject.create_date) {
-            jsonObject.create_date = humanizedISO8601DateTime();
+            jsonObject.create_date = new Date().toISOString();
         }
     } else {
         const result = readFromV2(jsonObject);
@@ -598,7 +599,7 @@ function convertToV2(char, directories) {
         depth_prompt_role: char.depth_prompt_role,
     }, directories);
 
-    result.chat = char.chat ?? humanizedISO8601DateTime();
+    result.chat = char.chat ?? `${char.name} - ${humanizedDateTime()}`;
     result.create_date = char.create_date;
 
     return result;
@@ -621,9 +622,12 @@ function readFromV2(char) {
     let wasFixed = false;
 
     if (_.isUndefined(char.data)) {
-        console.warn(`Char ${char['name']} has Spec v2 data missing`);
+        console.warn(`Char ${char.name} has Spec v2 data missing`);
         return { char, wasFixed };
     }
+
+    // If 'json_data' was already saved, don't let it propagate
+    _.unset(char, 'json_data');
 
     const fieldMappings = {
         name: 'name',
@@ -656,18 +660,18 @@ function readFromV2(char) {
                 //console.warn(`Spec v2 extension data missing for field: ${charField}, using default value: ${defaultValue}`);
                 char[charField] = defaultValue;
             } else {
-                console.warn(`Char ${char['name']} has Spec v2 data missing for unknown field: ${charField}`);
+                console.warn(`Char ${char.name} has Spec v2 data missing for unknown field: ${charField}`);
                 return;
             }
         }
         if (!_.isUndefined(char[charField]) && !_.isUndefined(v2Value) && String(char[charField]) !== String(v2Value)) {
-            console.info(`Char ${char['name']} has Spec v2 data mismatch with Spec v1 for field: ${charField} - auto-fixing`);
+            console.info(`Char ${char.name} has Spec v2 data mismatch with Spec v1 for field: ${charField} - auto-fixing`);
             wasFixed = true;
         }
         char[charField] = v2Value;
     });
 
-    char['chat'] = char['chat'] ?? humanizedISO8601DateTime();
+    char.chat = char.chat ?? `${char.name} - ${humanizedDateTime()}`;
 
     return { char, wasFixed };
 }
@@ -681,6 +685,9 @@ function readFromV2(char) {
 function charaFormatData(data, directories) {
     // This is supposed to save all the foreign keys that ST doesn't care about
     const char = tryParse(data.json_data) || {};
+
+    // Prevent erroneous 'json_data' recursive saving
+    _.unset(char, 'json_data');
 
     // Checks if data.alternate_greetings is an array, a string, or neither, and acts accordingly. (expected to be an array of strings)
     const getAlternateGreetings = (/** @type {{ alternate_greetings: any; }} */ data) => {
@@ -700,7 +707,7 @@ function charaFormatData(data, directories) {
     // Old ST extension fields (for backward compatibility, will be deprecated)
     _.set(char, 'creatorcomment', data.creator_notes || '');
     _.set(char, 'avatar', 'none');
-    _.set(char, 'chat', data.ch_name + ' - ' + humanizedISO8601DateTime());
+    _.set(char, 'chat', data.ch_name + ' - ' + humanizedDateTime());
     _.set(char, 'talkativeness', data.talkativeness || 0.5);
     _.set(char, 'fav', data.fav == 'true');
     _.set(char, 'tags', typeof data.tags == 'string' ? (data.tags.split(',').map((/** @type {string} */ x) => x.trim()).filter((/** @type {any} */ x) => x)) : data.tags || []);
@@ -737,12 +744,6 @@ function charaFormatData(data, directories) {
     _.set(char, 'data.extensions.depth_prompt.prompt', data.depth_prompt_prompt ?? '');
     _.set(char, 'data.extensions.depth_prompt.depth', depth_value);
     _.set(char, 'data.extensions.depth_prompt.role', role_value);
-    //_.set(char, 'data.extensions.create_date', humanizedISO8601DateTime());
-    //_.set(char, 'data.extensions.avatar', 'none');
-    //_.set(char, 'data.extensions.chat', data.ch_name + ' - ' + humanizedISO8601DateTime());
-
-    // V3 fields
-    _.set(char, 'data.group_only_greetings', data.group_only_greetings ?? []);
 
     if (data.world) {
         try {
@@ -757,7 +758,6 @@ function charaFormatData(data, directories) {
             if (file && file.entries) {
                 _.set(char, 'data.character_book', convertWorldInfoToCharacterBook(data.world, file.entries));
             }
-
         } catch {
             console.warn(`Failed to read world info file: ${data.world}. Character book will not be available.`);
         }
@@ -808,6 +808,7 @@ function convertWorldInfoToCharacterBook(name, entries) {
                 useProbability: entry.useProbability ?? false,
                 depth: entry.depth ?? 4,
                 selectiveLogic: entry.selectiveLogic ?? 0,
+                outlet_name: entry.outletName ?? '',
                 group: entry.group ?? '',
                 group_override: entry.groupOverride ?? false,
                 group_weight: entry.groupWeight ?? null,
@@ -858,8 +859,8 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
         'name': yamlData.name,
         'description': yamlData.context ?? '',
         'first_mes': yamlData.greeting ?? '',
-        'create_date': humanizedISO8601DateTime(),
-        'chat': `${yamlData.name} - ${humanizedISO8601DateTime()}`,
+        'create_date': new Date().toISOString(),
+        'chat': `${yamlData.name} - ${humanizedDateTime()}`,
         'personality': '',
         'creatorcomment': '',
         'avatar': 'none',
@@ -882,41 +883,37 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
  * @returns {Promise<string>} Internal name of the character
  */
 async function importFromCharX(uploadPath, { request }, preservedFileName) {
-    const data = fs.readFileSync(uploadPath).buffer;
+    const fileBuffer = fs.readFileSync(uploadPath);
+    // Create a properly-sized ArrayBuffer (Node's buffer pool can cause oversized .buffer)
+    const data = fileBuffer.buffer.slice(fileBuffer.byteOffset, fileBuffer.byteOffset + fileBuffer.byteLength);
     fs.unlinkSync(uploadPath);
-    console.info('Importing from CharX');
-    const cardBuffer = await extractFileFromZipBuffer(data, 'card.json');
 
-    if (!cardBuffer) {
-        throw new Error('Failed to extract card.json from CharX file');
-    }
+    const parser = new CharXParser(data);
+    const { card, avatar, auxiliaryAssets, extractedBuffers } = await parser.parse();
 
-    const cardResult = readFromV2(JSON.parse(cardBuffer.toString()));
-    const card = cardResult.char;
+    const cardResult = readFromV2(card);
+    const processedCard = cardResult.char;
+    unsetPrivateFields(processedCard);
+    processedCard.create_date = new Date().toISOString();
+    processedCard.name = sanitize(processedCard.name);
 
-    if (card.spec === undefined) {
-        throw new Error('Invalid CharX card file: missing spec field');
-    }
+    const fileName = preservedFileName || getPngName(processedCard.name, request.user.directories);
+    // Use the actual character name for asset folders, not the unique filename
+    // ST's sprite system looks up by character name, not PNG filename
+    const characterFolder = processedCard.name;
 
-    /** @type {string|Buffer} */
-    let avatar = DEFAULT_AVATAR_PATH;
-    const assets = _.get(card, 'data.assets');
-    if (Array.isArray(assets) && assets.length) {
-        for (const asset of assets.filter(x => x.type === 'icon' && typeof x.uri === 'string')) {
-            const pathNoProtocol = String(asset.uri.replace(/^(?:\/\/|[^/]+)*\//, ''));
-            const buffer = await extractFileFromZipBuffer(data, pathNoProtocol);
-            if (buffer) {
-                avatar = buffer;
-                break;
+    if (auxiliaryAssets.length > 0) {
+        try {
+            const summary = persistCharXAssets(auxiliaryAssets, extractedBuffers, request.user.directories, characterFolder);
+            if (summary.sprites || summary.backgrounds || summary.misc) {
+                console.log(`CharX: Imported ${summary.sprites} sprite(s), ${summary.backgrounds} background(s), ${summary.misc} misc asset(s) for ${characterFolder}`);
             }
+        } catch (error) {
+            console.warn(`CharX: Failed to persist auxiliary assets for ${characterFolder}`, error);
         }
     }
 
-    unsetPrivateFields(card);
-    card['create_date'] = humanizedISO8601DateTime();
-    card.name = sanitize(card.name);
-    const fileName = preservedFileName || getPngName(card.name, request.user.directories);
-    const result = await writeCharacterData(avatar, JSON.stringify(card), fileName, request);
+    const result = await writeCharacterData(avatar, JSON.stringify(processedCard), fileName, request);
     return result ? fileName : '';
 }
 
@@ -928,8 +925,58 @@ async function importFromByaf(uploadPath, { request }, preservedFileName) {
     const byafData = await new ByafParser(data).parse();
     const cardResult = readFromV2(byafData.card);
     const card = cardResult.char;
-    const fileName = preservedFileName || getPngName(card.name, request.user.directories);
-    const result = await writeCharacterData(byafData.image, JSON.stringify(card), fileName, request);
+    const fileName = preservedFileName || getPngName(sanitize(byafData.character.displayName || card.name, { replacement: sanitizeSafeCharacterReplacements }), request.user.directories);
+
+    if (!preservedFileName) {
+        const createChatAsCurrentPersona = (scenario) => {
+            const chatName = sanitize(`${scenario.title || card.name} - ${humanizedDateTime()} imported.jsonl`, { replacement: sanitizeSafeCharacterReplacements });
+            const filePath = path.join(request.user.directories.chats, path.basename(fileName), chatName);
+            const dir = path.dirname(filePath);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            writeFileAtomicSync(filePath, ByafParser.getChatFromScenario(scenario, request.body.user_name, card.name, byafData.chatBackgrounds), 'utf8');
+            console.log(`Created ${chatName} chat from BYAF import`);
+            return chatName;
+        };
+
+        for (const bg of byafData.chatBackgrounds) {
+            const extension = path.extname(bg.paths?.[0]) || '.png';
+            const baseName = `${path.basename(fileName)}_bg`;
+            const filePath = path.join(request.user.directories.userImages, fileName);
+            if (!fs.existsSync(filePath)) fs.mkdirSync(filePath, { recursive: true });
+            const file = getUniqueName(baseName, (name) => fs.existsSync(path.join(filePath, `${name}${extension}`)));
+            if (Buffer.isBuffer(bg.data)) {
+                const newFile = `${file}${extension}`;
+                writeFileAtomicSync(path.join(filePath, newFile), bg.data);
+                bg.name = clientRelativePath(request.user.directories.root, path.join(filePath, newFile));
+                console.log(`Created ${newFile} background from BYAF import`);
+            }
+        }
+
+        const chats = [];
+        if (Array.isArray(byafData.scenarios)) {
+            for (const scenario of byafData.scenarios) {
+                chats.push(createChatAsCurrentPersona(scenario));
+            }
+        }
+
+        if (chats.length > 0) {
+            card.chat = path.basename(chats[0], path.extname(chats[0]));
+        }
+
+        for (const icon of byafData.images.slice(1)) {
+            const altImagesFolder = path.join(request.user.directories.characters, sanitize(card.name));
+            if (!fs.existsSync(altImagesFolder)) fs.mkdirSync(altImagesFolder, { recursive: true });
+            const extension = path.extname(icon.filename) || '.png';
+            const file = getUniqueName(`${sanitize(icon.label, { replacement: sanitizeSafeCharacterReplacements }) || 'alt'}`, (name) => fs.existsSync(path.join(altImagesFolder, `${name}${extension}`)));
+            if (Buffer.isBuffer(icon.image)) {
+                writeFileAtomicSync(path.join(altImagesFolder, `${file}${extension}`), icon.image);
+                console.log(`Created ${file}${extension} alternate icon from BYAF import`);
+            }
+        }
+    }
+
+    const result = await writeCharacterData(byafData.images[0].image, JSON.stringify(card), fileName, request);
+
     return result ? fileName : '';
 }
 
@@ -950,9 +997,9 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         console.info(`Importing from ${jsonData.spec} json`);
         importRisuSprites(request.user.directories, jsonData);
         unsetPrivateFields(jsonData);
-        const v2Result = readFromV2(jsonData);
-        jsonData = v2Result.char;
-        jsonData['create_date'] = humanizedISO8601DateTime();
+        const cardResult = readFromV2(jsonData);
+        jsonData = cardResult.char;
+        jsonData.create_date = new Date().toISOString();
         const pngName = preservedFileName || getPngName(jsonData.data?.name || jsonData.name, request.user.directories);
         const char = JSON.stringify(jsonData);
         const result = await writeCharacterData(DEFAULT_AVATAR_PATH, char, pngName, request);
@@ -971,10 +1018,10 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
             'personality': jsonData.personality ?? '',
             'first_mes': jsonData.first_mes ?? '',
             'avatar': 'none',
-            'chat': jsonData.name + ' - ' + humanizedISO8601DateTime(),
+            'chat': jsonData.name + ' - ' + humanizedDateTime(),
             'mes_example': jsonData.mes_example ?? '',
             'scenario': jsonData.scenario ?? '',
-            'create_date': humanizedISO8601DateTime(),
+            'create_date': new Date().toISOString(),
             'talkativeness': jsonData.talkativeness ?? 0.5,
             'creator': jsonData.creator ?? '',
             'tags': jsonData.tags ?? '',
@@ -983,7 +1030,8 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         let charJSON = JSON.stringify(char);
         const result = await writeCharacterData(DEFAULT_AVATAR_PATH, charJSON, pngName, request);
         return result ? pngName : '';
-    } else if (jsonData.char_name !== undefined) {//json Pygmalion notepad
+    } else if (jsonData.char_name !== undefined) {
+        //json Pygmalion notepad
         console.info('Importing from gradio json');
         jsonData.char_name = sanitize(jsonData.char_name);
         if (jsonData.creator_notes) {
@@ -997,10 +1045,10 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
             'personality': '',
             'first_mes': jsonData.char_greeting ?? '',
             'avatar': 'none',
-            'chat': jsonData.name + ' - ' + humanizedISO8601DateTime(),
+            'chat': jsonData.name + ' - ' + humanizedDateTime(),
             'mes_example': jsonData.example_dialogue ?? '',
             'scenario': jsonData.world_scenario ?? '',
-            'create_date': humanizedISO8601DateTime(),
+            'create_date': new Date().toISOString(),
             'talkativeness': jsonData.talkativeness ?? 0.5,
             'creator': jsonData.creator ?? '',
             'tags': jsonData.tags ?? '',
@@ -1034,9 +1082,9 @@ async function importFromPng(uploadPath, { request }, preservedFileName) {
         console.info(`Found a ${jsonData.spec} character file.`);
         importRisuSprites(request.user.directories, jsonData);
         unsetPrivateFields(jsonData);
-        const v2Result = readFromV2(jsonData);
-        jsonData = v2Result.char;
-        jsonData['create_date'] = humanizedISO8601DateTime();
+        const cardResult = readFromV2(jsonData);
+        jsonData = cardResult.char;
+        jsonData.create_date = new Date().toISOString();
         const char = JSON.stringify(jsonData);
         const result = await writeCharacterData(uploadPath, char, pngName, request);
         fs.unlinkSync(uploadPath);
@@ -1055,10 +1103,10 @@ async function importFromPng(uploadPath, { request }, preservedFileName) {
             'personality': jsonData.personality ?? '',
             'first_mes': jsonData.first_mes ?? '',
             'avatar': 'none',
-            'chat': jsonData.name + ' - ' + humanizedISO8601DateTime(),
+            'chat': jsonData.name + ' - ' + humanizedDateTime(),
             'mes_example': jsonData.mes_example ?? '',
             'scenario': jsonData.scenario ?? '',
-            'create_date': humanizedISO8601DateTime(),
+            'create_date': new Date().toISOString(),
             'talkativeness': jsonData.talkativeness ?? 0.5,
             'creator': jsonData.creator ?? '',
             'tags': jsonData.tags ?? '',
@@ -1247,8 +1295,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
 
         // Return new avatar name to ST
         return response.send({ avatar: newAvatarName });
-    }
-    catch (err) {
+    } catch (err) {
         console.error(err);
         return response.sendStatus(500);
     }
@@ -1294,9 +1341,50 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
         return response.sendStatus(200);
     } catch (err) {
         console.error('An error occurred, character edit invalidated.', err);
+        return response.sendStatus(500);
     }
 });
 
+router.post('/edit-avatar', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        if (!request.file) {
+            return response.status(400).send('Error: no file uploaded');
+        }
+
+        if (!request.body || !request.body.avatar_url) {
+            return response.status(400).send('Error: no avatar_url in request body');
+        }
+
+        const uploadPath = path.join(request.file.destination, request.file.filename);
+        if (!fs.existsSync(uploadPath)) {
+            return response.status(400).send('Error: uploaded file does not exist');
+        }
+        const characterPath = path.join(request.user.directories.characters, request.body.avatar_url);
+        if (!fs.existsSync(characterPath)) {
+            return response.status(400).send('Error: character file does not exist');
+        }
+        const data = await readCharacterData(characterPath);
+        if (!data) {
+            return response.status(400).send('Error: failed to read character data');
+        }
+
+        const crop = tryParse(request.query.crop);
+        const fileName = request.body.avatar_url.replace('.png', '');
+        await writeCharacterData(uploadPath, data, fileName, request, crop);
+
+        // Remove uploaded temp file
+        fs.unlinkSync(uploadPath);
+
+        // Reset images caches
+        cacheBuster.bust(request, response);
+        invalidateThumbnail(request.user.directories, 'avatar', request.body.avatar_url);
+
+        return response.sendStatus(200);
+    } catch (err) {
+        console.error('An error occurred while editing avatar', err);
+        return response.sendStatus(500);
+    }
+});
 
 /**
  * Handle a POST request to edit a character attribute.
@@ -1318,6 +1406,11 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
     if (request.body.ch_name === '' || request.body.ch_name === undefined || request.body.ch_name === '.') {
         console.warn('Error: invalid name.');
         return response.status(400).send('Error: invalid name.');
+    }
+
+    if (request.body.field === 'json_data') {
+        console.warn('Error: cannot edit json_data field.');
+        return response.status(400).send('Error: cannot edit json_data field.');
     }
 
     try {
@@ -1344,6 +1437,7 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
         return response.sendStatus(200);
     } catch (err) {
         console.error('An error occurred, character edit invalidated.', err);
+        return response.sendStatus(500);
     }
 });
 
@@ -1371,6 +1465,10 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         }
 
         let character = JSON.parse(pngStringData);
+
+        _.unset(update, 'json_data');
+        _.unset(character, 'json_data');
+
         character = deepMerge(character, update);
 
         const validator = new TavernCardValidator(character);
@@ -1547,21 +1645,21 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
             return response.send({ error: true });
         }
 
-        const files = fs.readdirSync(chatsDirectory);
-        const jsonFiles = files.filter(file => path.extname(file) === '.jsonl');
+        const files = fs.readdirSync(chatsDirectory, { withFileTypes: true });
+        const jsonFiles = files.filter(file => file.isFile() && path.extname(file.name) === '.jsonl').map(file => file.name);
 
         if (jsonFiles.length === 0) {
-            response.send({ error: true });
-            return;
+            return response.send([]);
         }
 
         if (request.body.simple) {
-            return response.send(jsonFiles.map(file => ({ file_name: file })));
+            return response.send(jsonFiles.map(file => ({ file_name: file, file_id: path.parse(file).name })));
         }
 
         const jsonFilesPromise = jsonFiles.map((file) => {
+            const withMetadata = !!request.body.metadata;
             const pathToFile = path.join(request.user.directories.chats, characterDirectory, file);
-            return getChatInfo(pathToFile);
+            return getChatInfo(pathToFile, {}, withMetadata);
         });
 
         const chatData = (await Promise.allSettled(jsonFilesPromise)).filter(x => x.status === 'fulfilled').map(x => x.value);
@@ -1690,8 +1788,7 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
         await updateAllCharactersCache(request, { action: 'add', avatar: newAvatarName });
 
         response.send({ path: newAvatarName });
-    }
-    catch (error) {
+    } catch (error) {
         console.error(error);
         return response.send({ error: true });
     }
@@ -1728,8 +1825,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
                     const jsonObject = result.jsonObject;
                     unsetPrivateFields(jsonObject);
                     return response.type('json').send(JSON.stringify(jsonObject, null, 4));
-                }
-                catch {
+                } catch {
                     return response.sendStatus(400);
                 }
             }

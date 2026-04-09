@@ -18,6 +18,7 @@ import { initConfig } from './config-init.js';
  * @property {boolean|string} enableIPv4 If enable IPv4 protocol ("auto" is also allowed)
  * @property {boolean|string} enableIPv6 If enable IPv6 protocol ("auto" is also allowed)
  * @property {boolean} dnsPreferIPv6 If prefer IPv6 for DNS
+ * @property {number} heartbeatInterval Interval in seconds to write a heartbeat file. 0 to disable.
  * @property {boolean} browserLaunchEnabled If automatically launch SillyTavern in the browser
  * @property {string} browserLaunchHostname Browser launch hostname
  * @property {number} browserLaunchPort Browser launch port override (-1 is use server port)
@@ -27,6 +28,7 @@ import { initConfig } from './config-init.js';
  * @property {boolean} ssl If enable SSL
  * @property {string} certPath Path to certificate
  * @property {string} keyPath Path to private key
+ * @property {string} keyPassphrase SSL private key passphrase
  * @property {boolean} whitelistMode If enable whitelist mode
  * @property {boolean} basicAuthMode If enable basic authentication
  * @property {boolean} requestProxyEnabled If enable outgoing request proxy
@@ -61,6 +63,7 @@ export class CommandLineParser {
             enableIPv4: true,
             enableIPv6: false,
             dnsPreferIPv6: false,
+            heartbeatInterval: 0,
             browserLaunchEnabled: false,
             browserLaunchHostname: 'auto',
             browserLaunchPort: -1,
@@ -70,6 +73,7 @@ export class CommandLineParser {
             ssl: false,
             certPath: 'certs/cert.pem',
             keyPath: 'certs/privkey.pem',
+            keyPassphrase: '',
             whitelistMode: true,
             basicAuthMode: false,
             requestProxyEnabled: false,
@@ -193,6 +197,11 @@ export class CommandLineParser {
                 default: null,
                 describe: 'Path to SSL private key file',
             })
+            .option('keyPassphrase', {
+                type: 'string',
+                default: null,
+                describe: 'Passphrase for the SSL private key',
+            })
             .option('whitelist', {
                 type: 'boolean',
                 default: null,
@@ -221,6 +230,11 @@ export class CommandLineParser {
             .option('requestProxyBypass', {
                 type: 'array',
                 describe: 'Request proxy bypass list (space separated list of hosts)',
+            })
+            .option('heartbeatInterval', {
+                type: 'number',
+                default: null,
+                describe: 'Interval in seconds to write a heartbeat file. 0 to disable.',
             })
             /* DEPRECATED options */
             .option('autorun', {
@@ -267,8 +281,12 @@ export class CommandLineParser {
         const dataRoot = isGlobal
             ? defaultConfig.dataRoot
             : (cliArguments.dataRoot ?? getConfigValue('dataRoot', defaultConfig.dataRoot));
-        if (isGlobal && !fs.existsSync(dataRoot)) {
-            fs.mkdirSync(dataRoot, { recursive: true });
+        try {
+            if (!fs.existsSync(dataRoot)) {
+                fs.mkdirSync(dataRoot, { recursive: true });
+            }
+        } catch (err) {
+            console.warn(color.yellow(`Warning: Failed to create data root directory at ${dataRoot}. Please make sure the path is correct and writable.`), err);
         }
 
         /** @type {CommandLineArguments} */
@@ -282,6 +300,7 @@ export class CommandLineParser {
             enableIPv4: stringToBool(cliArguments.enableIPv4) ?? stringToBool(getConfigValue('protocol.ipv4', defaultConfig.enableIPv4)) ?? defaultConfig.enableIPv4,
             enableIPv6: stringToBool(cliArguments.enableIPv6) ?? stringToBool(getConfigValue('protocol.ipv6', defaultConfig.enableIPv6)) ?? defaultConfig.enableIPv6,
             dnsPreferIPv6: cliArguments.dnsPreferIPv6 ?? getConfigValue('dnsPreferIPv6', defaultConfig.dnsPreferIPv6, 'boolean'),
+            heartbeatInterval: cliArguments.heartbeatInterval ?? getConfigValue('heartbeatInterval', defaultConfig.heartbeatInterval, 'number'),
             browserLaunchEnabled: cliArguments.browserLaunchEnabled ?? cliArguments.autorun ?? getConfigValue('browserLaunch.enabled', defaultConfig.browserLaunchEnabled, 'boolean'),
             browserLaunchHostname: cliArguments.browserLaunchHostname ?? cliArguments.autorunHostname ?? getConfigValue('browserLaunch.hostname', defaultConfig.browserLaunchHostname),
             browserLaunchPort: cliArguments.browserLaunchPort ?? cliArguments.autorunPortOverride ?? getConfigValue('browserLaunch.port', defaultConfig.browserLaunchPort, 'number'),
@@ -291,6 +310,7 @@ export class CommandLineParser {
             ssl: cliArguments.ssl ?? getConfigValue('ssl.enabled', defaultConfig.ssl, 'boolean'),
             certPath: cliArguments.certPath ?? getConfigValue('ssl.certPath', defaultConfig.certPath),
             keyPath: cliArguments.keyPath ?? getConfigValue('ssl.keyPath', defaultConfig.keyPath),
+            keyPassphrase: cliArguments.keyPassphrase ?? getConfigValue('ssl.keyPassphrase', defaultConfig.keyPassphrase),
             whitelistMode: cliArguments.whitelist ?? getConfigValue('whitelistMode', defaultConfig.whitelistMode, 'boolean'),
             basicAuthMode: cliArguments.basicAuthMode ?? getConfigValue('basicAuthMode', defaultConfig.basicAuthMode, 'boolean'),
             requestProxyEnabled: cliArguments.requestProxyEnabled ?? getConfigValue('requestProxy.enabled', defaultConfig.requestProxyEnabled, 'boolean'),

@@ -2,6 +2,7 @@ import { isMobile } from '../../RossAscends-mods.js';
 import { getPreviewString } from './index.js';
 import { saveTtsProviderSettings } from './index.js';
 export { SystemTtsProvider };
+import { t } from '../../i18n.js';
 
 /**
  * Chunkify
@@ -28,8 +29,7 @@ var speechUtteranceChunker = function (utt, settings, callback) {
                 callback();
             }
         });
-    }
-    else {
+    } else {
         var chunkLength = (settings && settings.chunkLength) || 160;
         var pattRegex = new RegExp('^[\\s\\S]{' + Math.floor(chunkLength / 2) + ',' + chunkLength + '}[.!?,]{1}|^[\\s\\S]{1,' + chunkLength + '}$|^[\\s\\S]{1,' + chunkLength + '} ');
         var chunkArr = txt.match(pattRegex);
@@ -96,13 +96,13 @@ class SystemTtsProvider {
 
     get settingsHtml() {
         if (!('speechSynthesis' in window)) {
-            return 'Your browser or operating system doesn\'t support speech synthesis';
+            return t`Your browser or operating system doesn't support speech synthesis`;
         }
 
-        return `<p>Uses the voices provided by your operating system</p>
-        <label for="system_tts_rate">Rate: <span id="system_tts_rate_output"></span></label>
+        return '<p>' + t`Uses the voices provided by your operating system` + `</p>
+        <label for="system_tts_rate">` + t`Rate:` + ` <span id="system_tts_rate_output"></span></label>
         <input id="system_tts_rate" type="range" value="${this.defaultSettings.rate}" min="0.1" max="2" step="0.01" />
-        <label for="system_tts_pitch">Pitch: <span id="system_tts_pitch_output"></span></label>
+        <label for="system_tts_pitch">` + t`Pitch:` + ` <span id="system_tts_pitch_output"></span></label>
         <input id="system_tts_pitch" type="range" value="${this.defaultSettings.pitch}" min="0" max="2" step="0.01" />`;
     }
 

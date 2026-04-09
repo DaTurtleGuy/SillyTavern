@@ -45,8 +45,11 @@ export const SECRET_KEYS = {
     STABILITY: 'api_key_stability',
     CUSTOM_OPENAI_TTS: 'api_key_custom_openai_tts',
     TAVILY: 'api_key_tavily',
+    CHUTES: 'api_key_chutes',
+    ELECTRONHUB: 'api_key_electronhub',
     NANOGPT: 'api_key_nanogpt',
     BFL: 'api_key_bfl',
+    COMFY_RUNPOD: 'api_key_comfy_runpod',
     FALAI: 'api_key_falai',
     GENERIC: 'api_key_generic',
     DEEPSEEK: 'api_key_deepseek',
@@ -59,6 +62,13 @@ export const SECRET_KEYS = {
     MINIMAX_GROUP_ID: 'minimax_group_id',
     MOONSHOT: 'api_key_moonshot',
     COMETAPI: 'api_key_cometapi',
+    AZURE_OPENAI: 'api_key_azure_openai',
+    ZAI: 'api_key_zai',
+    SILICONFLOW: 'api_key_siliconflow',
+    ELEVENLABS: 'api_key_elevenlabs',
+    POLLINATIONS: 'api_key_pollinations',
+    VOLCENGINE_APP_ID: 'volcengine_app_id',
+    VOLCENGINE_ACCESS_KEY: 'volcengine_access_key',
 };
 
 /**
@@ -94,7 +104,7 @@ const EXPORTABLE_KEYS = [
     SECRET_KEYS.DEEPLX_URL,
 ];
 
-const allowKeysExposure = !!getConfigValue('allowKeysExposure', false, 'boolean');
+export const allowKeysExposure = !!getConfigValue('allowKeysExposure', false, 'boolean');
 
 /**
  * SecretManager class to handle all secret operations
@@ -559,12 +569,13 @@ router.post('/find', (request, response) => {
         }
 
         const manager = new SecretManager(request.user.directories);
-        const secretValue = manager.readSecret(key, id);
+        const state = manager.getSecretState();
 
-        if (!secretValue) {
+        if (!state[key]) {
             return response.sendStatus(404);
         }
 
+        const secretValue = manager.readSecret(key, id);
         return response.send({ value: secretValue });
     } catch (error) {
         console.error('Error finding secret:', error);
@@ -624,4 +635,8 @@ router.post('/rename', (request, response) => {
         console.error('Error renaming secret:', error);
         return response.sendStatus(500);
     }
+});
+
+router.post('/settings', async (_request, response) => {
+    return response.send({ allowKeysExposure });
 });

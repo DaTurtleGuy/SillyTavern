@@ -38,11 +38,20 @@ browserLaunch:
   avoidLocalhost: false
 # Server port
 port: 8000
+# Interval in seconds to write a heartbeat file. Set to 0 to disable.
+# This is used primarily for Docker healthchecks.
+heartbeatInterval: 0
 # -- SSL options --
 ssl:
+  # Enable SSL/TLS encryption
   enabled: false
+  # Path to certificate (relative to server root)
   certPath: "./certs/cert.pem"
+  # Path to private key (relative to server root)
   keyPath: "./certs/privkey.pem"
+  # Private key passphrase (leave empty if not needed)
+  # For better security, use a CLI argument or an environment variable (SILLYTAVERN_SSL_KEYPASSPHRASE)
+  keyPassphrase: ""
 # -- SECURITY CONFIGURATION --
 # Toggle whitelist mode
 whitelistMode: true
@@ -62,6 +71,25 @@ basicAuthUser:
   password: "password"
 # Enables CORS proxy middleware
 enableCorsProxy: false
+# CORS settings (applied to all routes)
+cors:
+  # Enable or disable CORS middleware
+  enabled: true
+  # Allowed origins. Use "null" to match the default browser file origin.
+  # You can set "*" to allow any origin, or a list of allowed origins.
+  origin:
+    - "null"
+  # Allowed methods
+  methods:
+    - "OPTIONS"
+  # Allowed request headers (optional)
+  allowedHeaders: []
+  # Exposed response headers (optional)
+  exposedHeaders: []
+  # Allow credentials (cookies, authorization headers)
+  credentials: false
+  # Preflight cache max age in seconds (optional)
+  maxAge: null
 # -- REQUEST PROXY CONFIGURATION --
 requestProxy:
   # If a proxy is enabled, all outgoing HTTP/HTTPS requests will be routed through it.
@@ -76,18 +104,42 @@ requestProxy:
 enableUserAccounts: false
 # Enable discreet login mode: hides user list on the login screen
 enableDiscreetLogin: false
-# Enable's authlia based auto login. Only enable this if you
-# have setup and installed Authelia as a middle-ware on your
-# reverse proxy
-# https://www.authelia.com/
-# This will use auto login to an account with the same username
-# as that used for authlia. (Ensure the username in authlia
-# is an exact match in lowercase with that in sillytavern)
-autheliaAuth: false
 # If `basicAuthMode` and this are enabled then
 # the username and passwords for basic auth are the same as those
 # for the individual accounts
 perUserBasicAuth: false
+
+# -- SSO LOGIN CONFIGURATION --
+sso:
+  # Enable's authlia based auto login. Only enable this if you
+  # have setup and installed Authelia as a middle-ware on your
+  # reverse proxy
+  # https://www.authelia.com/
+  # This will use auto login to an account with the same username
+  # as that used for authlia. (Ensure the username in authlia
+  # is an exact match in lowercase with that in sillytavern)
+  autheliaAuth: false
+  # Enable's authentik based auto login. Only enable this if you
+  # have setup and installed Authentik as a middle-ware on your
+  # reverse proxy.
+  # https://goauthentik.io/
+  # This will use auto login to an account with the same username
+  # as that used for authentik. (Ensure the username in authentik
+  # is an exact match in lowercase with that in sillytavern).
+  authentikAuth: false
+
+# Host whitelist configuration. Recommended if you're using a listen mode
+hostWhitelist:
+  # Enable or disable host whitelisting
+  enabled: false
+  # Scan incoming requests for potential host header spoofing
+  scan: true
+  # List of allowed hosts. Do not include localhost or IPs, these are safe.
+  # Use a dot to create subdomain patterns.
+  # Examples:
+  # - example.com
+  # - .trycloudflare.com
+  hosts: []
 
 # User session timeout *in seconds* (defaults to 24 hours).
 ## Set to a positive number to expire session after a certain time of inactivity
@@ -113,6 +165,8 @@ rateLimiting:
 
 ## BACKUP CONFIGURATION
 backups:
+  # Allow users to create a full backup archive of their data
+  allowFullDataBackup: true
   # Common settings for all backup types
   common:
     # Number of backups to keep for each chat and settings file
@@ -153,6 +207,16 @@ performance:
   # Enables SQLite character index for fast character list loading with minimal memory usage.
   # Recommended for users with many character cards.
   useCharacterIndex: true
+  # Configures gzip compression for client requests with large payloads (e.g. settings or chat saves).
+  requestCompression:
+    # Enable request compression.
+    enabled: false
+    # Minimum payload size to trigger compression. Set to 0 to compress all requests regardless of size.
+    minPayloadSize: '256kb'
+    # Hard upper payload size limit for compression. Set to 0 to allow compression of any size.
+    maxPayloadSize: '8mb'
+    # Timeout for request compression in milliseconds.
+    timeout: 4000
 
 # CACHE BUSTER CONFIGURATION
 # IMPORTANT: Requires localhost or a domain with HTTPS, otherwise will not work!
@@ -173,7 +237,6 @@ whitelistImportDomains:
   - cdn.discordapp.com
   - files.catbox.moe
   - raw.githubusercontent.com
-  - char-archive.evulid.cc
 # API request overrides (for KoboldAI and Text Completion APIs)
 ## Note: host includes the port number if it's not the default (80 or 443)
 ## Format is an array of objects:
@@ -201,6 +264,13 @@ extensions:
     embedding: Cohee/jina-embeddings-v2-base-en
     speechToText: Xenova/whisper-small
     textToSpeech: Xenova/speecht5_tts
+
+# Git backend for plugin/extension repository operations.
+# - Use "auto" to prefer system git, falling back to the integrated backend
+# - Use "system" to force system backend
+# - Use "builtin" to force integrated backend
+git:
+  backend: auto
 
 # Additional model tokenizers can be downloaded on demand.
 # Disabling will fallback to another locally available tokenizer.
@@ -238,14 +308,14 @@ ollama:
 # -- ANTHROPIC CLAUDE API CONFIGURATION --
 claude:
   # Enables caching of the system prompt (if supported).
-  # https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+  # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
   # -- IMPORTANT! --
   # Use only when the prompt before the chat history is static and doesn't change between requests
   # (e.g {{random}} macro or lorebooks not as in-chat injections).
   # Otherwise, you'll just waste money on cache misses.
   enableSystemPromptCache: false
   # Enables caching of the message history at depth (if supported).
-  # https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+  # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
   # -- IMPORTANT! --
   # Use with caution. Behavior may be unpredictable and no guarantees can or will be made.
   # Set to an integer to specify the desired depth. 0 (which does NOT include the prefill)
@@ -256,10 +326,26 @@ claude:
   ## 5m: base price x 1.25
   ## 1h: base price x 2
   extendedTTL: false
+  # Enables adaptive thinking for supported models (Opus 4.6+).
+  # Disable to enforce legacy thinking mode (with thinking budget).
+  # https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
+  enableAdaptiveThinking: false
 # -- GOOGLE GEMINI API CONFIGURATION --
 gemini:
   # API endpoint version ("v1beta" or "v1alpha")
   apiVersion: 'v1beta'
+  # Adds thought signatures to requests (if available). Only for Gemini 3 and above.
+  thoughtSignatures: true
+  # Enables caching of the system prompt (if supported). Only for OpenRouter.
+  # -- IMPORTANT! --
+  # Use only when the prompt before the chat history is static and doesn't change between requests
+  # (e.g {{random}} macro or lorebooks not as in-chat injections).
+  # Otherwise, you'll just waste money on cache misses.
+  enableSystemPromptCache: false
+  # https://ai.google.dev/gemini-api/docs/imagen#imagen-configuration
+  image:
+    # Leave empty to use the API-default value.
+    personGeneration: 'allow_adult'
 # -- SERVER PLUGIN CONFIGURATION --
 enableServerPlugins: false
 # Attempt to automatically update server plugins on startup
