@@ -21,6 +21,21 @@ function parseCreateDate(str) {
     return isNaN(ms) ? null : ms;
 }
 
+function normalizeToMs(value) {
+    if (value === undefined || value === null) return null;
+    if (typeof value === 'number') return isNaN(value) ? null : value;
+    if (typeof value === 'string') {
+        if (/^\d+(\.\d+)?$/.test(value.trim())) return parseFloat(value);
+        let ms = parseCreateDate(value);
+        if (ms !== null) return ms;
+        ms = parseSendDate(value);
+        if (ms !== null) return ms;
+        ms = Date.parse(value);
+        return isNaN(ms) ? null : ms;
+    }
+    return null;
+}
+
 function parseMessageTimestamp(line) {
     try {
         const obj = JSON.parse(line);
@@ -157,53 +172,53 @@ function main() {
         const originalValues = {};
         let changed = false;
 
-        // Fix date_added
         if (oldestAll !== Infinity) {
-            const current = group.date_added;
-            if (current === undefined || oldestAll < current) {
+            const rawDateAdded = group.date_added;
+            const currentDateAdded = normalizeToMs(rawDateAdded);
+            if (currentDateAdded === null || oldestAll < currentDateAdded) {
                 changes.push({
                     groupId,
                     field: 'date_added',
-                    old: current,
+                    old: rawDateAdded ?? '(none)',
                     new: oldestAll,
-                    oldReadable: current ? new Date(current).toISOString() : '(none)',
+                    oldReadable: currentDateAdded ? new Date(currentDateAdded).toISOString() : '(none)',
                     newReadable: new Date(oldestAll).toISOString(),
                 });
-                originalValues.date_added = current ?? null;
+                originalValues.date_added = rawDateAdded ?? null;
                 group.date_added = oldestAll;
                 changed = true;
             }
 
-            // Fix create_date
-            const currentCreateDate = group.create_date;
-            if (currentCreateDate === undefined || oldestAll < new Date(currentCreateDate).getTime()) {
+            const rawCreateDate = group.create_date;
+            const currentCreateDate = normalizeToMs(rawCreateDate);
+            if (currentCreateDate === null || oldestAll < currentCreateDate) {
                 changes.push({
                     groupId,
                     field: 'create_date',
-                    old: currentCreateDate,
+                    old: rawCreateDate ?? '(none)',
                     new: new Date(oldestAll).toISOString(),
-                    oldReadable: currentCreateDate || '(none)',
+                    oldReadable: currentCreateDate ? new Date(currentCreateDate).toISOString() : '(none)',
                     newReadable: new Date(oldestAll).toISOString(),
                 });
-                originalValues.create_date = currentCreateDate ?? null;
+                originalValues.create_date = rawCreateDate ?? null;
                 group.create_date = new Date(oldestAll).toISOString();
                 changed = true;
             }
         }
 
-        // Fix date_last_chat
         if (newestAll > 0) {
-            const current = group.date_last_chat;
-            if (current === undefined || current === 0 || newestAll > current) {
+            const rawLastChat = group.date_last_chat;
+            const currentLastChat = normalizeToMs(rawLastChat);
+            if (currentLastChat === null || currentLastChat === 0 || newestAll > currentLastChat) {
                 changes.push({
                     groupId,
                     field: 'date_last_chat',
-                    old: current,
+                    old: rawLastChat ?? '(none)',
                     new: newestAll,
-                    oldReadable: current ? new Date(current).toISOString() : '(none)',
+                    oldReadable: currentLastChat ? new Date(currentLastChat).toISOString() : '(none)',
                     newReadable: new Date(newestAll).toISOString(),
                 });
-                originalValues.date_last_chat = current ?? null;
+                originalValues.date_last_chat = rawLastChat ?? null;
                 group.date_last_chat = newestAll;
                 changed = true;
             }

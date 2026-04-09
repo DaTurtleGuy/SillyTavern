@@ -6,14 +6,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function parseSendDate(str) {
     if (!str || typeof str !== 'string') return null;
-    // Format: "May 17, 2025 4:28pm" or "March 26, 2026 11:23pm"
     const ms = Date.parse(str);
     return isNaN(ms) ? null : ms;
 }
 
 function parseCreateDate(str) {
     if (!str || typeof str !== 'string') return null;
-    // Format: "2025-05-17@16h28m04s"
     const normalized = str
         .replace('@', 'T')
         .replace(/h/g, ':')
@@ -21,6 +19,21 @@ function parseCreateDate(str) {
         .replace(/s$/, '');
     const ms = Date.parse(normalized);
     return isNaN(ms) ? null : ms;
+}
+
+function normalizeToMs(value) {
+    if (value === undefined || value === null) return null;
+    if (typeof value === 'number') return isNaN(value) ? null : value;
+    if (typeof value === 'string') {
+        if (/^\d+(\.\d+)?$/.test(value.trim())) return parseFloat(value);
+        let ms = parseCreateDate(value);
+        if (ms !== null) return ms;
+        ms = parseSendDate(value);
+        if (ms !== null) return ms;
+        ms = Date.parse(value);
+        return isNaN(ms) ? null : ms;
+    }
+    return null;
 }
 
 function parseMessageTimestamp(line) {
@@ -139,21 +152,21 @@ function main() {
 
         if (oldestAll === Infinity && newestAll === 0) continue;
 
-        const currentDateAdded = dateAddedData[charName];
+        const rawCurrentDateAdded = dateAddedData[charName];
+        const currentDateAdded = normalizeToMs(rawCurrentDateAdded);
         let updated = false;
 
-        // Fix date_added
         if (oldestAll !== Infinity) {
-            if (currentDateAdded === undefined || oldestAll < currentDateAdded) {
+            if (currentDateAdded === null || oldestAll < currentDateAdded) {
                 changes.push({
                     charName,
                     field: 'date_added',
-                    old: currentDateAdded ?? '(none)',
+                    old: rawCurrentDateAdded ?? '(none)',
                     new: oldestAll,
                     oldReadable: currentDateAdded ? new Date(currentDateAdded).toISOString() : '(none)',
                     newReadable: new Date(oldestAll).toISOString(),
                 });
-                backup[charName] = currentDateAdded ?? null;
+                backup[charName] = rawCurrentDateAdded ?? null;
                 dateAddedData[charName] = oldestAll;
                 updated = true;
             }
