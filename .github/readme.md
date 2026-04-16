@@ -12,14 +12,22 @@
 </div>
 
 ---
-TurtleTavern is a fork of SillyTavern with some features ive found missing in it, but really cant get the confidence to make a pull request for lol.
+TurtleTavern is a fork of SillyTavern with some stuff I wanted but can't muster the courage to PR lol. Also it's faster now or something.
 
+### Features
+* **Turtle Buttons** — Agnai-style clickable character buttons for group chats, with a new "Turtle Buttons" activation strategy that requires manual member selection via buttons instead of auto-activation.
+* **Persistent character/group dates** — Character creation dates are stored in a `date_added.json` file, so moving characters between instances preserves their original dates. Group dates are persisted in the group JSON itself. Includes repair scripts for migrating from old date formats.
+* **SQLite character index** — Characters are indexed in SQLite for fast list loading without re-parsing every PNG. The index auto-updates on character changes and can be manually rebuilt via the toolbar button. Enabled by default via `performance.useCharacterIndex`.
+* **Turtle Tools** — Character card utilities: remove all asterisks, normalize smart quotes, mass find & replace across card fields, and find & replace across chat messages (with swipe support).
+* **Replace Vowels** — Replaces Latin vowels with Cyrillic look-alikes in prompts, as a workaround for certain token filtering systems. Toggleable in the API drawer.
 
-Added things:
-* Turtle Buttons! Took inspiration of the buttons [Agnai](https://agnai.chat/) has for the group chats and bought them into my fork.
-* Persistant character creation date. Sometimes it would happen to me that ill have to move my characters from one instance of ST to another and i would lose which one was created when... So my fork creates a JSON file to keep track of that.
-* Character cache. This one reduces loading times for huge character libraries
-* Turtle Tools. There are currently two of them. One to replace smart quotes with normal quotes from the character card and another to remove all \* from the character card
+### Performance
+* **Smaller client bundle** — lib.js reduced from ~1.9 MB to ~940 KB by switching highlight.js to core-only (6 languages), replacing full lodash with individual imports, removing unused chalk from the client, and optimizing chevrotain imports.
+* **Cached version endpoint** — `getVersion()` no longer spawns git subprocesses on every call; the result is cached for the process lifetime.
+* **Memory debugging** — Built-in memory logging to `memory-debug.log` with per-request heap delta tracking and periodic snapshots (useful for diagnosing leaks on large instances).
+
+### Requirements
+* **Node.js >= 22** (upstream requires >= 20)
 
 ---
 
@@ -41,7 +49,7 @@ Beginning in February 2023 as a fork of TavernAI 1.2.8, SillyTavern now has over
 
 ## Do I need a powerful PC to run SillyTavern?
 
-The hardware requirements are minimal: it will run on anything that can run NodeJS 20 or higher. If you intend to do LLM inference on your local machine, we recommend a 3000-series NVIDIA graphics card with at least 6GB of VRAM, but actual requirements may vary depending on the model and backend you choose to use.
+The hardware requirements are minimal: it will run on anything that can run NodeJS 22 or higher. If you intend to do LLM inference on your local machine, we recommend a 3000-series NVIDIA graphics card with at least 6GB of VRAM, but actual requirements may vary depending on the model and backend you choose to use.
 
 ## Questions or suggestions?
 
