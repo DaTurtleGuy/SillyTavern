@@ -60,3 +60,5 @@ yarn.lock
 *.code-workspace
 test-results/
 scripts/backup-character-dates.json
+*.gz
+trace-temp.json

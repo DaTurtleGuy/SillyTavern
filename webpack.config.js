@@ -101,7 +101,16 @@ export default function getPublicLibConfig({ forceDist = false, pruneCache = fal
         },
         devtool: false,
         watch: false,
-        module: {},
+        module: {
+            rules: [
+                {
+                    test: /\.js$/,
+                    resolve: {
+                        fullySpecified: false,
+                    },
+                },
+            ],
+        },
         stats: {
             preset: 'minimal',
             assets: false,
