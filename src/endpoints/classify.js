@@ -1,15 +1,16 @@
 import express from 'express';
 
 import { getPipeline } from '../transformers.js';
+import { Cache } from '../util.js';
 
 const TASK = 'text-classification';
 
 export const router = express.Router();
 
 /**
- * @type {Map<string, object>} Cache for classification results
+ * @type {Cache} Cache for classification results (30 minute TTL)
  */
-const cacheObject = new Map();
+const cacheObject = new Cache(30 * 60 * 1000);
 
 router.post('/labels', async (req, res) => {
     try {
@@ -32,15 +33,15 @@ router.post('/', async (req, res) => {
          * @returns {Promise<object>} Classification result
          */
         async function getResult(text) {
-            if (cacheObject.has(text)) {
-                return cacheObject.get(text);
-            } else {
-                const pipe = await getPipeline(TASK);
-                const result = await pipe(text, { topk: 5 });
-                result.sort((a, b) => b.score - a.score);
-                cacheObject.set(text, result);
-                return result;
+            const cached = cacheObject.get(text);
+            if (cached) {
+                return cached;
             }
+            const pipe = await getPipeline(TASK);
+            const result = await pipe(text, { topk: 5 });
+            result.sort((a, b) => b.score - a.score);
+            cacheObject.set(text, result);
+            return result;
         }
 
         console.debug('Classify input:', text);

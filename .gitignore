@@ -62,3 +62,6 @@ test-results/
 scripts/backup-character-dates.json
 *.gz
 trace-temp.json
+rss_trend.csv
+ext_trend.csv
+logs.log

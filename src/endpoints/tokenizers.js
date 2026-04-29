@@ -21,10 +21,12 @@ import { getConfigValue, isValidUrl } from '../util.js';
  * @typedef { (req: import('express').Request, res: import('express').Response) => Promise<any> } TokenizationHandler
  */
 
+const TOKENIZERS_CACHE_MAX_SIZE = 5;
+
 /**
- * @type {{[key: string]: import('tiktoken').Tiktoken}} Tokenizers cache
+ * @type {Map<string, {tokenizer: import('tiktoken').Tiktoken, lastAccess: number}>}
  */
-const tokenizersCache = {};
+const tokenizersCache = new Map();
 
 /**
  * @type {string[]}
@@ -528,13 +530,32 @@ export function getTokenizerModel(requestModel) {
 }
 
 export function getTiktokenTokenizer(model) {
-    if (tokenizersCache[model]) {
-        return tokenizersCache[model];
+    const entry = tokenizersCache.get(model);
+    if (entry) {
+        entry.lastAccess = Date.now();
+        return entry.tokenizer;
+    }
+
+    while (tokenizersCache.size >= TOKENIZERS_CACHE_MAX_SIZE) {
+        let oldestKey = null;
+        let oldestTime = Infinity;
+        for (const [key, val] of tokenizersCache) {
+            if (val.lastAccess < oldestTime) {
+                oldestTime = val.lastAccess;
+                oldestKey = key;
+            }
+        }
+        if (oldestKey != null) {
+            const evicted = tokenizersCache.get(oldestKey);
+            evicted.tokenizer.free();
+            tokenizersCache.delete(oldestKey);
+            console.info('Evicted tokenizer for', oldestKey);
+        }
     }
 
     const tokenizer = tiktoken.encoding_for_model(model);
     console.info('Instantiated the tokenizer for', model);
-    tokenizersCache[model] = tokenizer;
+    tokenizersCache.set(model, { tokenizer, lastAccess: Date.now() });
     return tokenizer;
 }
 
