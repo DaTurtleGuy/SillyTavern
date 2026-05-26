@@ -11042,18 +11042,20 @@ jQuery(async function () {
         $('#groupCurrentMemberListToggle .inline-drawer-icon').trigger('click');
     }, 200);
 
-    const turtleAdditions = power_user.turtle_additions || {};
+    eventSource.on(event_types.SETTINGS_LOADED, () => {
+        const turtleAdditions = power_user.turtle_additions || {};
 
-    $("#replace_vowels").prop('checked', turtleAdditions.replace_vowels || false);
+        $("#replace_vowels").prop('checked', turtleAdditions.replace_vowels || false);
+        $("#custom_prompt_processor_enabled").prop('checked', turtleAdditions.custom_prompt_processor_enabled || false);
+        $("#custom_prompt_processor_code").val(turtleAdditions.custom_prompt_processor_code || '');
+        $("#custom_prompt_processor_fallback").prop('checked', turtleAdditions.custom_prompt_processor_fallback !== false);
+    });
+
     $("#replace_vowels").change(function () {
         power_user.turtle_additions = power_user.turtle_additions || {};
         power_user.turtle_additions.replace_vowels = $(this).is(":checked");
         saveSettingsDebounced();
     })
-
-    $("#custom_prompt_processor_enabled").prop('checked', turtleAdditions.custom_prompt_processor_enabled || false);
-    $("#custom_prompt_processor_code").val(turtleAdditions.custom_prompt_processor_code || '');
-    $("#custom_prompt_processor_fallback").prop('checked', turtleAdditions.custom_prompt_processor_fallback !== false);
 
     $("#custom_prompt_processor_enabled").change(function () {
         power_user.turtle_additions = power_user.turtle_additions || {};
