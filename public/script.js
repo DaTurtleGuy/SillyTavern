@@ -462,12 +462,6 @@ let is_delete_mode = false;
 let fav_ch_checked = false;
 let scrollLock = false;
 
-let REPLACE_VOWELS = localStorage.getItem('REPLACE_VOWELS') === 'true';
-
-let CUSTOM_PROMPT_PROCESSOR_ENABLED = localStorage.getItem('CUSTOM_PROMPT_PROCESSOR_ENABLED') === 'true';
-let CUSTOM_PROMPT_PROCESSOR_CODE = localStorage.getItem('CUSTOM_PROMPT_PROCESSOR_CODE') || '';
-let CUSTOM_PROMPT_PROCESSOR_FALLBACK = localStorage.getItem('CUSTOM_PROMPT_PROCESSOR_FALLBACK') !== 'false';
-
 export let abortStatusCheck = new AbortController();
 export let charDragDropHandler = null;
 export let chatDragDropHandler = null;
@@ -3427,7 +3421,7 @@ export function getCharacterCardFields({ chid = undefined } = {}) {
         alternateGreetings: lazy.alternateGreetings,
     };
 
-    if (REPLACE_VOWELS) {
+    if (power_user.turtle_additions?.replace_vowels) {
         for (const key of Object.keys(result)) {
             result[key] = replaceVowels(result[key]);
         }
@@ -5237,7 +5231,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
             generate_data = { prompt: prompt };
 
-            if (REPLACE_VOWELS) {
+            const turtleAdditions = power_user.turtle_additions || {};
+
+            if (turtleAdditions.replace_vowels) {
                 const turtleMessages = generate_data.prompt
                 for (const i in Object.keys(turtleMessages)) {
                     turtleMessages[i].content = replaceVowels(turtleMessages[i].content)
@@ -5246,9 +5242,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 generate_data.prompt = turtleMessages
             }
 
-            if (CUSTOM_PROMPT_PROCESSOR_ENABLED && CUSTOM_PROMPT_PROCESSOR_CODE) {
+            if (turtleAdditions.custom_prompt_processor_enabled && turtleAdditions.custom_prompt_processor_code) {
                 try {
-                    const processorFn = new Function('messages', CUSTOM_PROMPT_PROCESSOR_CODE);
+                    const processorFn = new Function('messages', turtleAdditions.custom_prompt_processor_code);
                     const processedMessages = processorFn(generate_data.prompt);
                     if (Array.isArray(processedMessages)) {
                         generate_data.prompt = processedMessages;
@@ -5257,7 +5253,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                     }
                 } catch (err) {
                     console.error('[CustomPromptProcessor] Error:', err);
-                    if (CUSTOM_PROMPT_PROCESSOR_FALLBACK) {
+                    if (turtleAdditions.custom_prompt_processor_fallback) {
                         console.warn('[CustomPromptProcessor] Fallback enabled, sending unmodified prompt');
                     } else {
                         toastr.error('Custom JS Processor error: ' + err.message);
@@ -11046,29 +11042,35 @@ jQuery(async function () {
         $('#groupCurrentMemberListToggle .inline-drawer-icon').trigger('click');
     }, 200);
 
-        $("#replace_vowels").prop('checked', REPLACE_VOWELS);
+    const turtleAdditions = power_user.turtle_additions || {};
+
+    $("#replace_vowels").prop('checked', turtleAdditions.replace_vowels || false);
     $("#replace_vowels").change(function () {
-        REPLACE_VOWELS = $(this).is(":checked");
-        localStorage.setItem("REPLACE_VOWELS", REPLACE_VOWELS ? "true" : "false");
+        power_user.turtle_additions = power_user.turtle_additions || {};
+        power_user.turtle_additions.replace_vowels = $(this).is(":checked");
+        saveSettingsDebounced();
     })
 
-    $("#custom_prompt_processor_enabled").prop('checked', CUSTOM_PROMPT_PROCESSOR_ENABLED);
-    $("#custom_prompt_processor_code").val(CUSTOM_PROMPT_PROCESSOR_CODE);
-    $("#custom_prompt_processor_fallback").prop('checked', CUSTOM_PROMPT_PROCESSOR_FALLBACK);
+    $("#custom_prompt_processor_enabled").prop('checked', turtleAdditions.custom_prompt_processor_enabled || false);
+    $("#custom_prompt_processor_code").val(turtleAdditions.custom_prompt_processor_code || '');
+    $("#custom_prompt_processor_fallback").prop('checked', turtleAdditions.custom_prompt_processor_fallback !== false);
 
     $("#custom_prompt_processor_enabled").change(function () {
-        CUSTOM_PROMPT_PROCESSOR_ENABLED = $(this).is(":checked");
-        localStorage.setItem("CUSTOM_PROMPT_PROCESSOR_ENABLED", CUSTOM_PROMPT_PROCESSOR_ENABLED ? "true" : "false");
+        power_user.turtle_additions = power_user.turtle_additions || {};
+        power_user.turtle_additions.custom_prompt_processor_enabled = $(this).is(":checked");
+        saveSettingsDebounced();
     });
 
     $("#custom_prompt_processor_code").on('input', function () {
-        CUSTOM_PROMPT_PROCESSOR_CODE = $(this).val();
-        localStorage.setItem("CUSTOM_PROMPT_PROCESSOR_CODE", CUSTOM_PROMPT_PROCESSOR_CODE);
+        power_user.turtle_additions = power_user.turtle_additions || {};
+        power_user.turtle_additions.custom_prompt_processor_code = $(this).val();
+        saveSettingsDebounced();
     });
 
     $("#custom_prompt_processor_fallback").change(function () {
-        CUSTOM_PROMPT_PROCESSOR_FALLBACK = $(this).is(":checked");
-        localStorage.setItem("CUSTOM_PROMPT_PROCESSOR_FALLBACK", CUSTOM_PROMPT_PROCESSOR_FALLBACK ? "true" : "false");
+        power_user.turtle_additions = power_user.turtle_additions || {};
+        power_user.turtle_additions.custom_prompt_processor_fallback = $(this).is(":checked");
+        saveSettingsDebounced();
     });
 
     $(document).on('click', '.api_loading', () => cancelStatusCheck('Canceled because connecting was manually canceled'));

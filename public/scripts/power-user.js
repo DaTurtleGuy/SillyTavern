@@ -138,6 +138,12 @@ export const power_user = {
         allow_chat_completions: false,
         target_length: 400,
     },
+    turtle_additions: {
+        replace_vowels: false,
+        custom_prompt_processor_enabled: false,
+        custom_prompt_processor_code: '',
+        custom_prompt_processor_fallback: true,
+    },
     markdown_escape_strings: '',
     chat_truncation: 100,
     streaming_fps: 30,
