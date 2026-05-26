@@ -464,6 +464,10 @@ let scrollLock = false;
 
 let REPLACE_VOWELS = localStorage.getItem('REPLACE_VOWELS') === 'true';
 
+let CUSTOM_PROMPT_PROCESSOR_ENABLED = localStorage.getItem('CUSTOM_PROMPT_PROCESSOR_ENABLED') === 'true';
+let CUSTOM_PROMPT_PROCESSOR_CODE = localStorage.getItem('CUSTOM_PROMPT_PROCESSOR_CODE') || '';
+let CUSTOM_PROMPT_PROCESSOR_FALLBACK = localStorage.getItem('CUSTOM_PROMPT_PROCESSOR_FALLBACK') !== 'false';
+
 export let abortStatusCheck = new AbortController();
 export let charDragDropHandler = null;
 export let chatDragDropHandler = null;
@@ -5240,6 +5244,26 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 }
 
                 generate_data.prompt = turtleMessages
+            }
+
+            if (CUSTOM_PROMPT_PROCESSOR_ENABLED && CUSTOM_PROMPT_PROCESSOR_CODE) {
+                try {
+                    const processorFn = new Function('messages', CUSTOM_PROMPT_PROCESSOR_CODE);
+                    const processedMessages = processorFn(generate_data.prompt);
+                    if (Array.isArray(processedMessages)) {
+                        generate_data.prompt = processedMessages;
+                    } else {
+                        console.warn('[CustomPromptProcessor] Processor did not return an array, using unmodified prompt');
+                    }
+                } catch (err) {
+                    console.error('[CustomPromptProcessor] Error:', err);
+                    if (CUSTOM_PROMPT_PROCESSOR_FALLBACK) {
+                        console.warn('[CustomPromptProcessor] Fallback enabled, sending unmodified prompt');
+                    } else {
+                        toastr.error('Custom JS Processor error: ' + err.message);
+                        throw err;
+                    }
+                }
             }
 
             // TODO: move these side-effects somewhere else, so this switch-case solely sets generate_data
@@ -11027,6 +11051,25 @@ jQuery(async function () {
         REPLACE_VOWELS = $(this).is(":checked");
         localStorage.setItem("REPLACE_VOWELS", REPLACE_VOWELS ? "true" : "false");
     })
+
+    $("#custom_prompt_processor_enabled").prop('checked', CUSTOM_PROMPT_PROCESSOR_ENABLED);
+    $("#custom_prompt_processor_code").val(CUSTOM_PROMPT_PROCESSOR_CODE);
+    $("#custom_prompt_processor_fallback").prop('checked', CUSTOM_PROMPT_PROCESSOR_FALLBACK);
+
+    $("#custom_prompt_processor_enabled").change(function () {
+        CUSTOM_PROMPT_PROCESSOR_ENABLED = $(this).is(":checked");
+        localStorage.setItem("CUSTOM_PROMPT_PROCESSOR_ENABLED", CUSTOM_PROMPT_PROCESSOR_ENABLED ? "true" : "false");
+    });
+
+    $("#custom_prompt_processor_code").on('input', function () {
+        CUSTOM_PROMPT_PROCESSOR_CODE = $(this).val();
+        localStorage.setItem("CUSTOM_PROMPT_PROCESSOR_CODE", CUSTOM_PROMPT_PROCESSOR_CODE);
+    });
+
+    $("#custom_prompt_processor_fallback").change(function () {
+        CUSTOM_PROMPT_PROCESSOR_FALLBACK = $(this).is(":checked");
+        localStorage.setItem("CUSTOM_PROMPT_PROCESSOR_FALLBACK", CUSTOM_PROMPT_PROCESSOR_FALLBACK ? "true" : "false");
+    });
 
     $(document).on('click', '.api_loading', () => cancelStatusCheck('Canceled because connecting was manually canceled'));
 

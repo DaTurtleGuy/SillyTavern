@@ -2261,25 +2261,7 @@
             </div>
             <div id="rm_api_block" class="drawer-content closedDrawer">
                 <h3 class="margin0" id="title_api">API</h3>
-                <div class="inline-drawer m-t-1 wide100p" bis_skin_checked="1">
-                    <div class="inline-drawer-toggle inline-drawer-header" bis_skin_checked="1">
-                        <b data-i18n="Quick Prompts Edit">Turtle Options</b>
-                        <div class="fa-solid fa-circle-chevron-down inline-drawer-icon down interactable"
-                            bis_skin_checked="1" tabindex="0"></div>
-                    </div>
-                    <div class="inline-drawer-content" bis_skin_checked="1">
-                        <div class="range-block" bis_skin_checked="1">
-                            <label for="replace_vowels"
-                                title="Replaces all the vowels in prompt with their cyrilic equivalent"
-                                class="checkbox_label widthFreeExpand">
-                                <input id="replace_vowels" type="checkbox"><span>Replace Vowels</span>
-                            </label>
-                            <div class="toggle-description justifyLeft" bis_skin_checked="1">
-                                <span>Replaces all the vowels in prompt with their cyrilic equivalent</span><br>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                
                 <div class="flex-container flexFlowColumn">
                     <div id="main-API-selector-block">
                         <select id="main_api">
@@ -4028,6 +4010,49 @@
                                     <option data-i18n="prompt_post_processing_single" value="single">Single user message (no tools)</option>
                                 </optgroup>
                             </select>
+                        </div>
+                        <div id="fork_additions" class="m-t-1">
+                            <h4>
+                                <span>TurtleTavern Additions</span>
+                            </h4>
+                            <div class="range-block">
+                                <label for="replace_vowels"
+                                    title="Replaces all the vowels in prompt with their cyrilic equivalent"
+                                    class="checkbox_label widthFreeExpand">
+                                    <input id="replace_vowels" type="checkbox"><span>Replace Vowels</span>
+                                </label>
+                                <div class="toggle-description justifyLeft">
+                                    <span>Replaces all the vowels in prompt with their cyrilic equivalent</span>
+                                </div>
+                            </div>
+                            <div class="range-block">
+                                <label for="custom_prompt_processor_enabled"
+                                    class="checkbox_label widthFreeExpand">
+                                    <input id="custom_prompt_processor_enabled" type="checkbox">
+                                    <span>Enable Custom JS Processor</span>
+                                </label>
+                                <div class="toggle-description justifyLeft">
+                                    <span>Run custom JavaScript on prompt messages before sending to API</span>
+                                </div>
+                            </div>
+                            <div class="m-t-1">
+                                <small class="displayBlock m-b-1">
+                                    Function receives <code>messages</code> array of <code>{role, content}</code> objects. Return modified array.
+                                </small>
+                                <textarea id="custom_prompt_processor_code"
+                                    class="text_pole textarea_compact monospace autoSetHeight"
+                                    rows="6" spellcheck="false" placeholder="// function processPrompt(messages) {...}"></textarea>
+                            </div>
+                            <div class="range-block">
+                                <label for="custom_prompt_processor_fallback"
+                                    class="checkbox_label widthFreeExpand">
+                                    <input id="custom_prompt_processor_fallback" type="checkbox" checked>
+                                    <span>Fallback to Unmodified on Error</span>
+                                </label>
+                                <div class="toggle-description justifyLeft">
+                                    <span>If checked, errors in custom JS will log and send unmodified prompt. If unchecked, errors abort generation.</span>
+                                </div>
+                            </div>
                         </div>
                         <div class="flex-container flex">
                             <div id="api_button_openai" class="api_button menu_button menu_button_icon" type="submit" data-i18n="Connect">Connect</div>
