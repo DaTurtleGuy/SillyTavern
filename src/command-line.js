@@ -19,6 +19,9 @@ import { initConfig } from './config-init.js';
  * @property {boolean|string} enableIPv6 If enable IPv6 protocol ("auto" is also allowed)
  * @property {boolean} dnsPreferIPv6 If prefer IPv6 for DNS
  * @property {number} heartbeatInterval Interval in seconds to write a heartbeat file. 0 to disable.
+ * @property {boolean} heapSnapshot Enable periodic heap snapshots for memory debugging.
+ * @property {number} heapSnapshotInterval Interval in milliseconds between heap snapshots.
+ * @property {number} heapSnapshotMax Maximum heap snapshots to keep on disk.
  * @property {boolean} browserLaunchEnabled If automatically launch SillyTavern in the browser
  * @property {string} browserLaunchHostname Browser launch hostname
  * @property {number} browserLaunchPort Browser launch port override (-1 is use server port)
@@ -64,6 +67,9 @@ export class CommandLineParser {
             enableIPv6: false,
             dnsPreferIPv6: false,
             heartbeatInterval: 0,
+            heapSnapshot: false,
+            heapSnapshotInterval: 3600000,
+            heapSnapshotMax: 5,
             browserLaunchEnabled: false,
             browserLaunchHostname: 'auto',
             browserLaunchPort: -1,
@@ -236,6 +242,21 @@ export class CommandLineParser {
                 default: null,
                 describe: 'Interval in seconds to write a heartbeat file. 0 to disable.',
             })
+            .option('heapSnapshot', {
+                type: 'boolean',
+                default: false,
+                describe: 'Enable periodic heap snapshots for memory debugging',
+            })
+            .option('heapSnapshotInterval', {
+                type: 'number',
+                default: 3600000,
+                describe: 'Interval in milliseconds between heap snapshots (requires --heapSnapshot)',
+            })
+            .option('heapSnapshotMax', {
+                type: 'number',
+                default: 5,
+                describe: 'Maximum heap snapshots to keep on disk; deletes oldest when exceeded (requires --heapSnapshot)',
+            })
             /* DEPRECATED options */
             .option('autorun', {
                 type: 'boolean',
@@ -301,6 +322,9 @@ export class CommandLineParser {
             enableIPv6: stringToBool(cliArguments.enableIPv6) ?? stringToBool(getConfigValue('protocol.ipv6', defaultConfig.enableIPv6)) ?? defaultConfig.enableIPv6,
             dnsPreferIPv6: cliArguments.dnsPreferIPv6 ?? getConfigValue('dnsPreferIPv6', defaultConfig.dnsPreferIPv6, 'boolean'),
             heartbeatInterval: cliArguments.heartbeatInterval ?? getConfigValue('heartbeatInterval', defaultConfig.heartbeatInterval, 'number'),
+            heapSnapshot: cliArguments.heapSnapshot ?? defaultConfig.heapSnapshot,
+            heapSnapshotInterval: cliArguments.heapSnapshotInterval ?? defaultConfig.heapSnapshotInterval,
+            heapSnapshotMax: cliArguments.heapSnapshotMax ?? defaultConfig.heapSnapshotMax,
             browserLaunchEnabled: cliArguments.browserLaunchEnabled ?? cliArguments.autorun ?? getConfigValue('browserLaunch.enabled', defaultConfig.browserLaunchEnabled, 'boolean'),
             browserLaunchHostname: cliArguments.browserLaunchHostname ?? cliArguments.autorunHostname ?? getConfigValue('browserLaunch.hostname', defaultConfig.browserLaunchHostname),
             browserLaunchPort: cliArguments.browserLaunchPort ?? cliArguments.autorunPortOverride ?? getConfigValue('browserLaunch.port', defaultConfig.browserLaunchPort, 'number'),

@@ -61,6 +61,8 @@ import {
     initMemoryLog,
     memoryLog,
     closeMemoryLog,
+    getHeapSpaceStatistics,
+    writeHeapSnapshot,
 } from './util.js';
 import { UPLOADS_DIRECTORY } from './constants.js';
 
@@ -361,7 +363,16 @@ async function preSetupTasks() {
         const external = Math.round(mem.external / 1024 / 1024);
         const streams = getActiveStreams();
         memoryLog(`[Memory] RSS: ${rss}MB | Heap: ${heapUsed}/${heapTotal}MB | External: ${external}MB | Active streams: ${streams}`);
+        memoryLog(`[HeapSpaces] ${getHeapSpaceStatistics()}`);
     }, 60_000);
+
+    if (cliArgs.heapSnapshot) {
+        console.log(`Heap snapshot enabled: interval=${cliArgs.heapSnapshotInterval}ms, max=${cliArgs.heapSnapshotMax}`);
+        memoryLog(`[Heap] Snapshot mode enabled: interval=${cliArgs.heapSnapshotInterval}ms, max=${cliArgs.heapSnapshotMax}`);
+        setInterval(() => {
+            writeHeapSnapshot(cliArgs.dataRoot, cliArgs.heapSnapshotMax);
+        }, cliArgs.heapSnapshotInterval);
+    }
 
     // Wait for frontend libs to compile
     await webpackMiddleware.runWebpackCompiler({ pruneCache: true });

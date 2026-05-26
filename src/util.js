@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import http2 from 'node:http2';
 import process from 'node:process';
+import v8 from 'node:v8';
 import { Readable } from 'node:stream';
 import { createRequire } from 'node:module';
 import { Buffer } from 'node:buffer';
@@ -743,6 +744,45 @@ export function closeMemoryLog() {
         memoryLogStream.end();
         memoryLogStream = null;
     }
+}
+
+export function getHeapSpaceStatistics() {
+    const spaces = v8.getHeapSpaceStatistics();
+    return spaces.map(space => {
+        const name = space.space_name;
+        const usedMB = Math.round(space.space_used_size /1024 / 1024);
+        const totalMB = Math.round(space.space_size / 1024 / 1024);
+        return `${name}: ${usedMB}/${totalMB}MB`;
+    }).join(' | ');
+}
+
+export function writeHeapSnapshot(logDirectory, maxSnapshots) {
+    const snapshotsDir = path.join(logDirectory, 'heap-snapshots');
+    if (!fs.existsSync(snapshotsDir)) {
+        fs.mkdirSync(snapshotsDir, { recursive: true });
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const snapshotName = `heap-${timestamp}.heapsnapshot`;
+    const snapshotPath = v8.writeHeapSnapshot(path.join(snapshotsDir, snapshotName));
+    memoryLog(`[Heap] Snapshot written to ${snapshotPath}`);
+
+    const existingSnapshots = fs.readdirSync(snapshotsDir)
+        .filter(f => f.endsWith('.heapsnapshot'))
+        .map(f => ({
+            name: f,
+            path: path.join(snapshotsDir, f),
+            mtime: fs.statSync(path.join(snapshotsDir, f)).mtimeMs,
+        }))
+        .sort((a, b) => a.mtime - b.mtime);
+
+    while (existingSnapshots.length > maxSnapshots) {
+        const oldest = existingSnapshots.shift();
+        fs.unlinkSync(oldest.path);
+        memoryLog(`[Heap] Deleted old snapshot: ${oldest.name}`);
+    }
+
+    return snapshotPath;
 }
 
 export function forwardFetchResponse(from, to) {
