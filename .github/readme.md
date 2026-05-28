@@ -30,7 +30,7 @@ TurtleTavern is a fork of SillyTavern with some stuff I wanted but can't muster 
 ### Performance
 * **Smaller client bundle** — lib.js reduced from ~1.9 MB to ~940 KB by switching highlight.js to core-only (6 languages), replacing full lodash with individual imports, removing unused chalk from the client, and optimizing chevrotain imports.
 * **Cached version endpoint** — `getVersion()` no longer spawns git subprocesses on every call; the result is cached for the process lifetime.
-* **Memory debugging** — Built-in memory logging to `memory-debug.log` with per-request heap delta tracking and periodic snapshots (useful for diagnosing leaks on large instances).
+* **Memory debugging** — Look, I have over 1000 characters. Shit Just Crashes™ randomly and I have no idea why. So I added heap snapshots and memory logging to `memory-debug.log` with per-request heap delta tracking. Now I can stare at Chrome DevTools at 3AM questioning my life choices. **I WILL FIND YOU, FUCKING MEMORY LEAK.** (Useful for diagnosing leaks on large instances, if you also have a problem.)
 
 ### Requirements
 * **Node.js >= 22** (upstream requires >= 20)
