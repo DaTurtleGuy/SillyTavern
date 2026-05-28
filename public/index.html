@@ -4015,6 +4015,8 @@
                             <h4>
                                 <span>TurtleTavern Additions</span>
                             </h4>
+                            <h5 class="m-t-1"><span>Chat History Processor (Pre-Tokenization)</span></h5>
+                            <small class="displayBlock m-b-1">Runs before token counting. Modifications affect token budget.</small>
                             <div class="range-block">
                                 <label for="replace_vowels"
                                     title="Replaces all the vowels in prompt with their cyrilic equivalent"
@@ -4022,35 +4024,65 @@
                                     <input id="replace_vowels" type="checkbox"><span>Replace Vowels</span>
                                 </label>
                                 <div class="toggle-description justifyLeft">
-                                    <span>Replaces all the vowels in prompt with their cyrilic equivalent</span>
+                                    <span>Replaces all the vowels in prompt with their cyrilic equivalent (saves tokens on Cyrillic)</span>
                                 </div>
                             </div>
                             <div class="range-block">
-                                <label for="custom_prompt_processor_enabled"
+                                <label for="pre_processor_enabled"
                                     class="checkbox_label widthFreeExpand">
-                                    <input id="custom_prompt_processor_enabled" type="checkbox">
-                                    <span>Enable Custom JS Processor</span>
+                                    <input id="pre_processor_enabled" type="checkbox">
+                                    <span>Enable Custom Pre-Processor</span>
                                 </label>
                                 <div class="toggle-description justifyLeft">
-                                    <span>Run custom JavaScript on prompt messages before sending to API</span>
+                                    <span>Run custom JavaScript on chat messages before token counting</span>
                                 </div>
                             </div>
                             <div class="m-t-1">
                                 <small class="displayBlock m-b-1">
                                     Function receives <code>messages</code> array of <code>{role, content}</code> objects. Return modified array.
                                 </small>
-                                <textarea id="custom_prompt_processor_code"
+                                <textarea id="pre_processor_code"
                                     class="text_pole textarea_compact monospace autoSetHeight"
-                                    rows="6" spellcheck="false" placeholder="// function processPrompt(messages) {...}"></textarea>
+                                    rows="6" spellcheck="false" placeholder="// Remove details blocks from old messages&#10;// messages = messages.filter(m => !m.content.includes('<details'));&#10;// return messages;"></textarea>
                             </div>
                             <div class="range-block">
-                                <label for="custom_prompt_processor_fallback"
+                                <label for="pre_processor_fallback"
                                     class="checkbox_label widthFreeExpand">
-                                    <input id="custom_prompt_processor_fallback" type="checkbox" checked>
+                                    <input id="pre_processor_fallback" type="checkbox" checked>
                                     <span>Fallback to Unmodified on Error</span>
                                 </label>
                                 <div class="toggle-description justifyLeft">
-                                    <span>If checked, errors in custom JS will log and send unmodified prompt. If unchecked, errors abort generation.</span>
+                                    <span>If checked, errors will log and continue with unmodified messages. If unchecked, errors abort generation.</span>
+                                </div>
+                            </div>
+                            <h5 class="m-t-1"><span>Prompt Post-Processor (Post-Tokenization)</span></h5>
+                            <small class="displayBlock m-b-1">Runs after token counting. Has final say before API call.</small>
+                            <div class="range-block">
+                                <label for="post_processor_enabled"
+                                    class="checkbox_label widthFreeExpand">
+                                    <input id="post_processor_enabled" type="checkbox">
+                                    <span>Enable Custom Post-Processor</span>
+                                </label>
+                                <div class="toggle-description justifyLeft">
+                                    <span>Run custom JavaScript on final prompt after tokenization</span>
+                                </div>
+                            </div>
+                            <div class="m-t-1">
+                                <small class="displayBlock m-b-1">
+                                    Function receives <code>messages</code> array of <code>{role, content}</code> objects. Return modified array.
+                                </small>
+                                <textarea id="post_processor_code"
+                                    class="text_pole textarea_compact monospace autoSetHeight"
+                                    rows="6" spellcheck="false" placeholder="// Last-chance modifications before API call"></textarea>
+                            </div>
+                            <div class="range-block">
+                                <label for="post_processor_fallback"
+                                    class="checkbox_label widthFreeExpand">
+                                    <input id="post_processor_fallback" type="checkbox" checked>
+                                    <span>Fallback to Unmodified on Error</span>
+                                </label>
+                                <div class="toggle-description justifyLeft">
+                                    <span>If checked, errors will log and continue with unmodified prompt. If unchecked, errors abort generation.</span>
                                 </div>
                             </div>
                         </div>

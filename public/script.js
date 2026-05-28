@@ -4760,6 +4760,36 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     if (main_api === 'openai') {
         oaiMessages = setOpenAIMessages(coreChat);
         oaiMessageExamples = setOpenAIMessageExamples(mesExamplesArray);
+
+        const turtleAdditions = power_user.turtle_additions || {};
+
+        if (turtleAdditions.replace_vowels) {
+            for (const msg of oaiMessages) {
+                if (typeof msg.content === 'string') {
+                    msg.content = replaceVowels(msg.content);
+                }
+            }
+        }
+
+        if (turtleAdditions.pre_processor_enabled && turtleAdditions.pre_processor_code) {
+            try {
+                const processorFn = new Function('messages', turtleAdditions.pre_processor_code);
+                const processedMessages = processorFn(oaiMessages);
+                if (Array.isArray(processedMessages)) {
+                    oaiMessages = processedMessages;
+                } else {
+                    console.warn('[PreProcessor] Processor did not return an array, using unmodified messages');
+                }
+            } catch (err) {
+                console.error('[PreProcessor] Error:', err);
+                if (turtleAdditions.pre_processor_fallback) {
+                    console.warn('[PreProcessor] Fallback enabled, continuing with unmodified messages');
+                } else {
+                    toastr.error('Pre-Processor error: ' + err.message);
+                    throw err;
+                }
+            }
+        }
     }
 
     // hack for regeneration of the first message
@@ -5233,30 +5263,25 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
             const turtleAdditions = power_user.turtle_additions || {};
 
-            if (turtleAdditions.replace_vowels) {
-                const turtleMessages = generate_data.prompt
-                for (const i in Object.keys(turtleMessages)) {
-                    turtleMessages[i].content = replaceVowels(turtleMessages[i].content)
-                }
+            const postProcessorEnabled = turtleAdditions.post_processor_enabled ?? turtleAdditions.custom_prompt_processor_enabled ?? false;
+            const postProcessorCode = turtleAdditions.post_processor_code ?? turtleAdditions.custom_prompt_processor_code ?? '';
+            const postProcessorFallback = turtleAdditions.post_processor_fallback ?? turtleAdditions.custom_prompt_processor_fallback ?? true;
 
-                generate_data.prompt = turtleMessages
-            }
-
-            if (turtleAdditions.custom_prompt_processor_enabled && turtleAdditions.custom_prompt_processor_code) {
+            if (postProcessorEnabled && postProcessorCode) {
                 try {
-                    const processorFn = new Function('messages', turtleAdditions.custom_prompt_processor_code);
+                    const processorFn = new Function('messages', postProcessorCode);
                     const processedMessages = processorFn(generate_data.prompt);
                     if (Array.isArray(processedMessages)) {
                         generate_data.prompt = processedMessages;
                     } else {
-                        console.warn('[CustomPromptProcessor] Processor did not return an array, using unmodified prompt');
+                        console.warn('[PostProcessor] Processor did not return an array, using unmodified prompt');
                     }
                 } catch (err) {
-                    console.error('[CustomPromptProcessor] Error:', err);
-                    if (turtleAdditions.custom_prompt_processor_fallback) {
-                        console.warn('[CustomPromptProcessor] Fallback enabled, sending unmodified prompt');
+                    console.error('[PostProcessor] Error:', err);
+                    if (postProcessorFallback) {
+                        console.warn('[PostProcessor] Fallback enabled, sending unmodified prompt');
                     } else {
-                        toastr.error('Custom JS Processor error: ' + err.message);
+                        toastr.error('Post-Processor error: ' + err.message);
                         throw err;
                     }
                 }
@@ -11045,33 +11070,62 @@ jQuery(async function () {
     eventSource.on(event_types.SETTINGS_LOADED, () => {
         const turtleAdditions = power_user.turtle_additions || {};
 
+        // Pre-processor (pre-tokenization)
         $("#replace_vowels").prop('checked', turtleAdditions.replace_vowels || false);
-        $("#custom_prompt_processor_enabled").prop('checked', turtleAdditions.custom_prompt_processor_enabled || false);
-        $("#custom_prompt_processor_code").val(turtleAdditions.custom_prompt_processor_code || '');
-        $("#custom_prompt_processor_fallback").prop('checked', turtleAdditions.custom_prompt_processor_fallback !== false);
+        $("#pre_processor_enabled").prop('checked', turtleAdditions.pre_processor_enabled || false);
+        $("#pre_processor_code").val(turtleAdditions.pre_processor_code || '');
+        $("#pre_processor_fallback").prop('checked', turtleAdditions.pre_processor_fallback !== false);
+
+        // Post-processor (post-tokenization) - with backward compatibility for old field names
+        const postEnabled = turtleAdditions.post_processor_enabled ?? turtleAdditions.custom_prompt_processor_enabled ?? false;
+        const postCode = turtleAdditions.post_processor_code ?? turtleAdditions.custom_prompt_processor_code ?? '';
+        const postFallback = turtleAdditions.post_processor_fallback ?? turtleAdditions.custom_prompt_processor_fallback ?? true;
+        $("#post_processor_enabled").prop('checked', postEnabled);
+        $("#post_processor_code").val(postCode);
+        $("#post_processor_fallback").prop('checked', postFallback);
     });
 
     $("#replace_vowels").change(function () {
         power_user.turtle_additions = power_user.turtle_additions || {};
         power_user.turtle_additions.replace_vowels = $(this).is(":checked");
         saveSettingsDebounced();
-    })
+    });
 
-    $("#custom_prompt_processor_enabled").change(function () {
+    // Pre-processor handlers
+    $("#pre_processor_enabled").change(function () {
         power_user.turtle_additions = power_user.turtle_additions || {};
-        power_user.turtle_additions.custom_prompt_processor_enabled = $(this).is(":checked");
+        power_user.turtle_additions.pre_processor_enabled = $(this).is(":checked");
         saveSettingsDebounced();
     });
 
-    $("#custom_prompt_processor_code").on('input', function () {
+    $("#pre_processor_code").on('input', function () {
         power_user.turtle_additions = power_user.turtle_additions || {};
-        power_user.turtle_additions.custom_prompt_processor_code = $(this).val();
+        power_user.turtle_additions.pre_processor_code = $(this).val();
         saveSettingsDebounced();
     });
 
-    $("#custom_prompt_processor_fallback").change(function () {
+    $("#pre_processor_fallback").change(function () {
         power_user.turtle_additions = power_user.turtle_additions || {};
-        power_user.turtle_additions.custom_prompt_processor_fallback = $(this).is(":checked");
+        power_user.turtle_additions.pre_processor_fallback = $(this).is(":checked");
+        saveSettingsDebounced();
+    });
+
+    // Post-processor handlers
+    $("#post_processor_enabled").change(function () {
+        power_user.turtle_additions = power_user.turtle_additions || {};
+        power_user.turtle_additions.post_processor_enabled = $(this).is(":checked");
+        saveSettingsDebounced();
+    });
+
+    $("#post_processor_code").on('input', function () {
+        power_user.turtle_additions = power_user.turtle_additions || {};
+        power_user.turtle_additions.post_processor_code = $(this).val();
+        saveSettingsDebounced();
+    });
+
+    $("#post_processor_fallback").change(function () {
+        power_user.turtle_additions = power_user.turtle_additions || {};
+        power_user.turtle_additions.post_processor_fallback = $(this).is(":checked");
         saveSettingsDebounced();
     });
 
