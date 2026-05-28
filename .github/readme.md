@@ -19,9 +19,13 @@ TurtleTavern is a fork of SillyTavern with some stuff I wanted but can't muster 
 * **Persistent character/group dates** — Character creation dates are stored in a `date_added.json` file, so moving characters between instances preserves their original dates. Group dates are persisted in the group JSON itself. Includes repair scripts for migrating from old date formats.
 * **SQLite character index** — Characters are indexed in SQLite for fast list loading without re-parsing every PNG. The index auto-updates on character changes and can be manually rebuilt via the toolbar button. Enabled by default via `performance.useCharacterIndex`.
 * **Turtle Tools** — Character card utilities: remove all asterisks, normalize smart quotes, mass find & replace across card fields, and find & replace across chat messages (with swipe support).
-* **TurtleTavern Additions** — Prompt post-processing features located in the API connection panel:
-  * **Replace Vowels** — Replaces Latin vowels with Cyrillic look-alikes in prompts, as a workaround for certain token filtering systems.
-  * **Custom JS Processor** — Run arbitrary JavaScript code on prompt messages before sending to the API. Receives a `messages` array of `{role, content}` objects and returns the modified array. Includes configurable error handling (fallback to unmodified or abort on error).
+* **TurtleTavern Additions** — Prompt processing features located in the API connection panel:
+  * **Chat History Processor (Pre-Tokenization)** — Runs *before* token counting, so modifications affect the token budget:
+    * **Replace Vowels** — Replaces Latin vowels with Cyrillic look-alikes in prompts, as a workaround for certain token filtering systems.
+    * **Custom Pre-Processor** — Run arbitrary JavaScript code on chat messages before tokenization. Useful for stripping content from old messages to free up token budget. Receives a `messages` array of `{role, content}` objects and returns the modified array.
+  * **Prompt Post-Processor (Post-Tokenization)** — Runs *after* token counting, has final say before API call:
+    * **Custom Post-Processor** — Run arbitrary JavaScript code on the final prompt after tokenization. Receives a `messages` array of `{role, content}` objects and returns the modified array.
+  * Both processors include configurable error handling (fallback to unmodified or abort on error).
 
 ### Performance
 * **Smaller client bundle** — lib.js reduced from ~1.9 MB to ~940 KB by switching highlight.js to core-only (6 languages), replacing full lodash with individual imports, removing unused chalk from the client, and optimizing chevrotain imports.
