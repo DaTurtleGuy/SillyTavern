@@ -12675,6 +12675,7 @@ async function replaceQuotes() {
 
     characters[this_chid] = editedCharacter;
     await saveCurrentCharacterDataProgrammatically();
+    await printCharacters();
     select_selected_character(this_chid);
     await regenerateFirstMessageIfNeeded();
 }
@@ -12696,6 +12697,7 @@ async function deleteAsterisks() {
 
     characters[this_chid] = editedCharacter;
     await saveCurrentCharacterDataProgrammatically();
+    await printCharacters();
     select_selected_character(this_chid);
     await regenerateFirstMessageIfNeeded();
 }
@@ -12859,8 +12861,9 @@ async function massReplace() {
         replaceField(editedCharacter.data, 'creator_notes');
     }
 
-    characters[this_chid] = editedCharacter;
+characters[this_chid] = editedCharacter;
     await saveCurrentCharacterDataProgrammatically();
+    await printCharacters();
     select_selected_character(this_chid);
     await regenerateFirstMessageIfNeeded();
 }
@@ -12872,7 +12875,6 @@ async function regenerateFirstMessageIfNeeded() {
         !selected_group &&
         !chat_metadata['tainted'] &&
         (chat.length === 0 || (chat.length === 1 && !chat[0].is_user && !chat[0].is_system));
-
     if (shouldRegenerate) {
         chat.splice(0, chat.length, message);
         const messageId = chat.length - 1;
