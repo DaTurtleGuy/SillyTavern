@@ -13044,8 +13044,6 @@ export async function saveCurrentCharacterDataProgrammatically() {
         return false;
     }
 
-    showLoader(); // Show loader during the save process
-
     try {
         const characterToSave = characters[this_chid];
         const formData = new FormData();
@@ -13118,8 +13116,6 @@ export async function saveCurrentCharacterDataProgrammatically() {
         console.error('Error saving character programmatically:', error);
         toastr.error(`Failed to save character: ${error.message || 'Unknown error'}`);
         return false;
-    } finally {
-        hideLoader();
     }
 }
 
