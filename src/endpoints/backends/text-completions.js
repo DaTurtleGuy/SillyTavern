@@ -57,6 +57,7 @@ async function parseOllamaStream(jsonStream, request, response) {
         });
 
         jsonStream.body.on('end', () => {
+            if (jsonStream.body instanceof Readable) jsonStream.body.destroy();
             console.info('Streaming request finished');
             response.write('data: [DONE]\n\n');
             response.end();

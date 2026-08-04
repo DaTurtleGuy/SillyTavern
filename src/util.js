@@ -821,11 +821,13 @@ export function forwardFetchResponse(from, to) {
         });
 
         from.body.on('end', function () {
+            if (from.body instanceof Readable) from.body.destroy();
             cleanup('Body ended');
             to.end();
         });
 
         from.body.on('error', function (err) {
+            if (from.body instanceof Readable) from.body.destroy();
             cleanup(`Body error: ${err.message}`);
             to.end();
         });
